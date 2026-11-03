@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: expand-rings-v2 2026-11-04 -->
+    <!-- build: edge-hardness-v1 2026-11-04 -->
     <style>
         * {
             margin: 0;
@@ -72,7 +72,7 @@
             letter-spacing: 0.5px;
             color: #ddd;
             white-space: nowrap;
-            min-width: 4.5em;
+            min-width: 5em;
         }
 
         #panel .slider-row input[type=range] {
@@ -168,6 +168,10 @@
             <input type="range" id="blur" min="0" max="1.5" step="0.05" value="0.35">
         </div>
         <div class="slider-row">
+            <label for="hardness">边缘硬度</label>
+            <input type="range" id="hardness" min="0" max="1" step="0.01" value="0.40">
+        </div>
+        <div class="slider-row">
             <label for="intensity">波纹强度</label>
             <input type="range" id="intensity" min="0.2" max="2.5" step="0.05" value="1.0">
         </div>
@@ -189,7 +193,7 @@
         }
     </script>
 
-    <!-- Dent stamp: soft persistent groove (negative height). Mid-point encoded. -->
+    <!-- Dent stamp: hardness-controlled gradual depression. Mid-point encoded. -->
     <script id="fs-dent" type="x-shader/x-fragment">
         precision highp float;
         uniform sampler2D uPrevDent;
@@ -199,6 +203,7 @@
         uniform float uRadius;
         uniform float uDepth;
         uniform float uStamp;
+        uniform float uHardness; // 0 soft gradual sink → 1 hard rim
         varying vec2 vUv;
 
         float decode(float e) { return (e - 0.5) * 5.0; }
@@ -213,13 +218,37 @@
                 vec2 ba = (uBrushB - uBrushA) * aspect;
                 float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
                 float dist = length(pa - ba * h);
-                // Readable wet groove; WAVE (uRadius) sets footprint size
+
                 float r = 0.022 * uRadius;
-                float brush = smoothstep(r * 1.15, r * 0.28, dist);
-                float core = exp(-(dist * dist) / max(1.25 * r * r, 1e-6));
-                float lip = smoothstep(r * 1.35, r * 0.80, dist) * (1.0 - smoothstep(r * 0.70, r * 0.25, dist));
-                brush = clamp(max(brush * 0.82, core * 0.90) + lip * 0.10, 0.0, 1.0);
-                // Carve down (more negative wins) — persistent, never damped
+                float hard = clamp(uHardness, 0.0, 1.0);
+
+                // Soft: wide outer falloff + soft core (慢慢凹陷, no sharp lip)
+                // Hard: tight edge, more carved rim
+                float outerMul = mix(1.85, 1.05, hard);
+                float innerMul = mix(0.08, 0.42, hard);
+                float brush = smoothstep(r * outerMul, r * innerMul, dist);
+
+                // Gaussian core: soft spreads deep sink gradually; hard concentrates
+                float coreSpread = mix(2.40, 0.85, hard);
+                float core = exp(-(dist * dist) / max(coreSpread * r * r, 1e-6));
+
+                // Soft: almost no rim lip; hard: subtle ridge at edge
+                float lipOuter = mix(1.55, 1.25, hard);
+                float lipMid   = mix(0.95, 0.78, hard);
+                float lipInner = mix(0.55, 0.28, hard);
+                float lip = smoothstep(r * lipOuter, r * lipMid, dist)
+                          * (1.0 - smoothstep(r * lipMid, r * lipInner, dist));
+                float lipAmt = mix(0.0, 0.14, hard);
+
+                // Soft leans on smooth falloff; hard mixes tighter core
+                float softW = mix(0.95, 0.55, hard);
+                float coreW = mix(0.55, 0.95, hard);
+                brush = clamp(brush * softW + core * coreW + lip * lipAmt, 0.0, 1.0);
+
+                // Soften power curve: soft = gentler bowl (sqrt-ish), hard = steeper walls
+                float shapePow = mix(0.72, 1.35, hard);
+                brush = pow(max(brush, 0.0), shapePow);
+
                 float carved = -uDepth * brush;
                 outH = min(prev, carved);
             }
@@ -315,6 +344,7 @@
         uniform float uIntensity;
         uniform float uMirror;
         uniform float uBlur;      // refraction blur strength from 模糊程度
+        uniform float uHardness;  // 边缘硬度 — soft = gentler wipe rim
         varying vec2 vUv;
 
         float decode(float e) { return (e - 0.5) * 5.0; }
@@ -454,10 +484,18 @@
             float waveMask = smoothstep(0.010, 0.055, abs(waveOnly));
             float activeMask = clamp(grooveMask + waveMask, 0.0, 1.0);
             // Living wet stroke through overlay (persistent groove + living waves)
-            float wipe = smoothstep(0.04, 0.72, grooveMask);
-            float edgeWipe = smoothstep(0.02, 0.18, grooveMask) * (1.0 - smoothstep(0.55, 0.95, grooveMask));
-            // Soft see-through: raise base visibility without killing stroke motion
-            float seeThru = smoothstep(0.06, 0.80, grooveMask);
+            // Soft hardness = wider wipe ramp (gradual depression); hard = tighter rim
+            float hard = clamp(uHardness, 0.0, 1.0);
+            float wipeLo = mix(0.015, 0.06, hard);
+            float wipeHi = mix(0.88, 0.62, hard);
+            float wipe = smoothstep(wipeLo, wipeHi, grooveMask);
+            float edgeLo = mix(0.008, 0.03, hard);
+            float edgeMid = mix(0.28, 0.16, hard);
+            float edgeHiA = mix(0.70, 0.50, hard);
+            float edgeHiB = mix(0.98, 0.90, hard);
+            float edgeWipe = smoothstep(edgeLo, edgeMid, grooveMask) * (1.0 - smoothstep(edgeHiA, edgeHiB, grooveMask));
+            // Soft see-through: clear camera shows through wet stroke; keep living motion
+            float seeThru = smoothstep(mix(0.03, 0.08, hard), mix(0.90, 0.72, hard), grooveMask);
 
             vec3 viewDir   = vec3(0.0, 0.0, 1.0);
             vec3 mainLight = normalize(vec3(0.4, 0.7, 1.0));
@@ -581,6 +619,7 @@
         let radiusMult = 1.0; // 笔刷大小
         let damping = 0.990; // 波纹衰减 — higher lasts longer after lift
         let blurAmount = 0.35; // 模糊程度
+        let edgeHardness = 0.40; // 边缘硬度 0 soft gradual → 1 hard rim
         let cameraTex, video;
         let bgImageTex = null;
         let bgImageEl = null;
@@ -942,12 +981,13 @@
         }
         function swapDent() { dentReadIsA = !dentReadIsA; }
 
-        function stampSegment(ax, ay, bx, by, depth, rad) {
+        function stampSegment(ax, ay, bx, by, depth, rad, hard) {
             // ax,ay screen UV (y top-down) → shader UV (y bottom-up)
             const A = [ax, 1.0 - ay];
             const B = [bx, 1.0 - by];
             const read = getDentRead();
             const write = getDentWrite();
+            const hrd = (typeof hard === 'number') ? hard : edgeHardness;
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, write.fbo);
             gl.viewport(0, 0, simW, simH);
@@ -962,6 +1002,7 @@
             gl.uniform2f(gl.getUniformLocation(programs.dent, 'uBrushB'), B[0], B[1]);
             gl.uniform1f(gl.getUniformLocation(programs.dent, 'uRadius'), rad);
             gl.uniform1f(gl.getUniformLocation(programs.dent, 'uDepth'), depth);
+            gl.uniform1f(gl.getUniformLocation(programs.dent, 'uHardness'), hrd);
             gl.uniform1f(gl.getUniformLocation(programs.dent, 'uStamp'), 1.0);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
             swapDent();
@@ -982,11 +1023,12 @@
                 const pts = stroke.points;
                 const depth = 0.55 * (stroke.intensity || intensity);
                 const rad = stroke.radius || radiusMult;
+                const hard = (typeof stroke.hardness === 'number') ? stroke.hardness : edgeHardness;
                 if (pts.length === 1) {
-                    stampSegment(pts[0].x, pts[0].y, pts[0].x, pts[0].y, depth, rad);
+                    stampSegment(pts[0].x, pts[0].y, pts[0].x, pts[0].y, depth, rad, hard);
                 } else {
                     for (let i = 1; i < pts.length; i++) {
-                        stampSegment(pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y, depth, rad);
+                        stampSegment(pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y, depth, rad, hard);
                     }
                 }
             }
@@ -1005,8 +1047,8 @@
         function onIndexDraw(x, y, pressure) {
             const sp = strokeParamsFromPressure(pressure);
             if (!currentStroke) {
-                currentStroke = { points: [{ x, y }], intensity: sp.inten, radius: sp.rad };
-                stampSegment(x, y, x, y, sp.depth, sp.rad);
+                currentStroke = { points: [{ x, y }], intensity: sp.inten, radius: sp.rad, hardness: edgeHardness };
+                stampSegment(x, y, x, y, sp.depth, sp.rad, edgeHardness);
                 return;
             }
             const last = currentStroke.points[currentStroke.points.length - 1];
@@ -1016,7 +1058,8 @@
             // Update stroke footprint if pressure changes mid-stroke
             currentStroke.radius = sp.rad;
             currentStroke.intensity = sp.inten;
-            stampSegment(last.x, last.y, x, y, sp.depth, sp.rad);
+            currentStroke.hardness = edgeHardness;
+            stampSegment(last.x, last.y, x, y, sp.depth, sp.rad, edgeHardness);
         }
 
         function endCurrentStroke() {
@@ -1121,6 +1164,7 @@
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uTime'), time * 0.001);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uIntensity'), intensity);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uBlur'), blurAmount);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uHardness'), edgeHardness);
             // Photos are not mirrored; live front camera still is
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'),
                 (useBgImage ? 0.0 : (mirrorPreview() ? 1.0 : 0.0)));
@@ -1251,6 +1295,9 @@
         });
         document.getElementById('blur').addEventListener('input', (e) => {
             blurAmount = parseFloat(e.target.value);
+        });
+        document.getElementById('hardness').addEventListener('input', (e) => {
+            edgeHardness = parseFloat(e.target.value);
         });
 
         document.getElementById('btn-undo').addEventListener('click', (e) => {
