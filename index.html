@@ -105,7 +105,7 @@
 
     <div id="loading">Initializing Reality...</div>
     <div id="error-log"></div>
-    <div id="hint-cn">食指绘制 · 右手握拳撤销</div>
+    <div id="hint-cn">食指擦出清晰笔迹 · 右手握拳撤销</div>
 
     <div id="top-controls" style="position: absolute; top: 20px; right: 20px; z-index: 20; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%;">
         <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">UNDO</button>
@@ -126,7 +126,7 @@
         </div>
         <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
             <label for="damping" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">DECAY</label>
-            <input type="range" id="damping" min="0.85" max="0.995" step="0.005" value="0.975" style="width: 65%; accent-color: #fff;">
+            <input type="range" id="damping" min="0.85" max="0.995" step="0.005" value="0.94" style="width: 65%; accent-color: #fff;">
         </div>
     </div>
     <div id="ui-overlay">
@@ -146,7 +146,7 @@
         }
     </script>
 
-    <!-- Dent stamp: soft persistent groove (negative height). Mid-point encoded. -->
+    <!-- Clear-mask stamp: persistent wipe through frost (0=frost, 1=clear). -->
     <script id="fs-dent" type="x-shader/x-fragment">
         precision highp float;
         uniform sampler2D uPrevDent;
@@ -158,29 +158,24 @@
         uniform float uStamp;
         varying vec2 vUv;
 
-        float decode(float e) { return (e - 0.5) * 5.0; }
-        float encode(float h) { return clamp(h * 0.2 + 0.5, 0.0, 1.0); }
-
         void main() {
-            float prev = decode(texture2D(uPrevDent, vUv).r);
-            float outH = prev;
+            float prev = texture2D(uPrevDent, vUv).r;
+            float outC = prev;
             if (uStamp > 0.5) {
                 vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
                 vec2 pa = (vUv - uBrushA) * aspect;
                 vec2 ba = (uBrushB - uBrushA) * aspect;
                 float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
                 float dist = length(pa - ba * h);
-                // Crisp liquid brush: constant width, soft but tight edge (no blooming lip)
+                // Constant-width clear brush (flowing pen trail)
                 float r = 0.025 * uRadius;
-                float brush = smoothstep(r, r * 0.35, dist);
-                // Slight Gaussian core for rounded trough without widening stroke
-                float core = exp(-(dist * dist) / max(1.15 * r * r, 1e-6));
-                brush = clamp(max(brush * 0.85, core * 0.95), 0.0, 1.0);
-                // Carve down (more negative wins) — persistent, never damped
-                float carved = -uDepth * brush;
-                outH = min(prev, carved);
+                float brush = smoothstep(r, r * 0.32, dist);
+                float core = exp(-(dist * dist) / max(1.05 * r * r, 1e-6));
+                brush = clamp(max(brush * 0.9, core), 0.0, 1.0);
+                // Persist clearness (more clear wins)
+                outC = max(prev, brush * clamp(uDepth, 0.0, 1.0));
             }
-            gl_FragColor = vec4(encode(outH), 0.0, 0.0, 1.0);
+            gl_FragColor = vec4(clamp(outC, 0.0, 1.0), 0.0, 0.0, 1.0);
         }
     </script>
 
@@ -219,37 +214,36 @@
             float avg = (p10 + p12 + p01 + p21) * 0.2 + (p00 + p20 + p02 + p22) * 0.05;
             float val = avg * 2.0 - prev;
 
-            float ampFactor = 1.0 - smoothstep(0.0, 0.08, abs(val)) * 0.008;
+            // Stronger damping so sparse rings fade before cluttering the screen
+            float ampFactor = 1.0 - smoothstep(0.0, 0.05, abs(val)) * 0.02;
             val *= uDamping * ampFactor;
 
-            // No ambient noise — idle surface stays clear.
-            // No continuous dent coupling — grooves stay sharp; waves come only from tip rings.
-
-            // Outward ripple ring around moving index tip (dent stamp carries the stroke shape)
+            // One soft, large expanding ring — only when tip moves enough (not every frame micro-ripple)
             if (uIndex.z > 0.5) {
                 vec2 currUV = vec2(uIndex.x, 1.0 - uIndex.y);
                 vec2 prevUV = (uPrevIndex.z > 0.5)
                     ? vec2(uPrevIndex.x, 1.0 - uPrevIndex.y)
                     : currUV;
-                // Distance from current tip (circular rings radiate from tip, not fat stroke blur)
-                vec2 dTip = (vUv - currUV) * aspect;
-                float dist = length(dTip);
-                float brushR = 0.025 * uRadius;
-                float ringInner = brushR * 1.05;
-                float ringOuter = brushR * 2.6;
-                float vel = length((currUV - prevUV) * aspect) * uResolution.y;
-                float force = 0.35 + clamp(vel * 0.014, 0.0, 0.85);
-                // Annulus only — keep center clear so the dent groove stays readable
-                float ring = smoothstep(ringInner * 0.75, ringInner, dist)
-                           * (1.0 - smoothstep(ringOuter * 0.75, ringOuter, dist));
-                val += ring * force * uIntensity * 0.22;
+                float move = length((currUV - prevUV) * aspect);
+                if (move > 0.0045) {
+                    vec2 dTip = (vUv - currUV) * aspect;
+                    float dist = length(dTip);
+                    float brushR = 0.025 * uRadius;
+                    // Wide soft annulus — sparse & calm
+                    float ringInner = brushR * 2.2;
+                    float ringOuter = brushR * 6.5;
+                    float ring = smoothstep(ringInner, ringInner + brushR * 1.2, dist)
+                               * (1.0 - smoothstep(ringOuter - brushR * 1.4, ringOuter, dist));
+                    float force = clamp(move * 18.0, 0.15, 0.55);
+                    val += ring * force * 0.07 * clamp(uIntensity, 0.4, 2.0);
+                }
             }
 
             gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 0.0, 1.0);
         }
     </script>
 
-    <!-- Final Render: height = dent + wave -->
+    <!-- Final Render: frosted ice mist + clear brush trails -->
     <script id="fs-render" type="x-shader/x-fragment">
         precision highp float;
         uniform sampler2D uCamera;
@@ -263,14 +257,14 @@
         uniform float uMirror;
         varying vec2 vUv;
 
-        float decode(float e) { return (e - 0.5) * 5.0; }
+        float decodeW(float e) { return (e - 0.5) * 5.0; }
 
         #define cam(offset) texture2D(uCamera, vec2( \
             mix(camUv.x + (offset).x, 1.0 - (camUv.x + (offset).x), uMirror), \
             camUv.y + (offset).y))
 
-        float sampleH(vec2 uv) {
-            return decode(texture2D(uDent, uv).r) + decode(texture2D(uWave, uv).r);
+        float hash21(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
         }
 
         void main() {
@@ -279,126 +273,92 @@
             float isCrystal = 1.0 - step(0.1, abs(uMode - 1.0));
 
             vec2 uv = vUv;
-            float data = sampleH(uv);
-            float dentOnly = decode(texture2D(uDent, uv).r);
+            float clearMask = texture2D(uDent, uv).r; // 0 frost → 1 clear trail
+            float waveOnly = decodeW(texture2D(uWave, uv).r);
 
-            float tl = sampleH(uv + vec2(-texel.x, -texel.y));
-            float tc = sampleH(uv + vec2( 0.0,     -texel.y));
-            float tr = sampleH(uv + vec2( texel.x, -texel.y));
-            float cl = sampleH(uv + vec2(-texel.x,  0.0    ));
-            float cr = sampleH(uv + vec2( texel.x,  0.0    ));
-            float bl = sampleH(uv + vec2(-texel.x,  texel.y));
-            float bc = sampleH(uv + vec2( 0.0,      texel.y));
-            float br = sampleH(uv + vec2( texel.x,  texel.y));
+            // Soft edge of clear stroke for subtle local refraction
+            float cL = texture2D(uDent, uv + vec2(-texel.x, 0.0)).r;
+            float cR = texture2D(uDent, uv + vec2( texel.x, 0.0)).r;
+            float cD = texture2D(uDent, uv + vec2(0.0, -texel.y)).r;
+            float cU = texture2D(uDent, uv + vec2(0.0,  texel.y)).r;
+            vec2 clearGrad = vec2(cR - cL, cU - cD) * 0.5;
+            float clearEdge = length(clearGrad);
 
-            float dx = (tr + 2.0*cr + br) - (tl + 2.0*cl + bl);
-            float dy = (bl + 2.0*bc + br) - (tl + 2.0*tc + tr);
-            vec2 grad = vec2(dx, dy) * 0.25;
+            vec2 aspect = vec2(1.0, uResolution.x / uResolution.y);
+            vec2 camUv  = (uv - 0.5) * uVideoScale + 0.5;
 
-            vec2 aspect  = vec2(1.0, uResolution.x / uResolution.y);
-            vec2 camUv   = (uv - 0.5) * uVideoScale + 0.5;
-            float gradLen = length(grad);
+            // Sharp camera (optionally slight refraction only inside clear path)
+            vec2 tipRefract = clearGrad * 0.12 * aspect * clearMask * clearEdge * 4.0;
+            tipRefract += vec2(waveOnly) * 0.01 * aspect * clearMask;
+            vec3 sharp = cam(tipRefract).rgb;
 
-            vec3 color = vec3(0.0);
+            // Frosted mist: wide blur + cool desat + frost grain
+            float frostStr = clamp(0.45 + 0.28 * uIntensity, 0.35, 1.15);
+            float blurPx = mix(3.0, 9.0, clamp(frostStr, 0.0, 1.0));
+            vec2 b = texel * blurPx;
+            vec3 blurCol = cam(vec2(0.0)).rgb * 0.20;
+            blurCol += cam(vec2( b.x, 0.0)).rgb * 0.13;
+            blurCol += cam(vec2(-b.x, 0.0)).rgb * 0.13;
+            blurCol += cam(vec2(0.0,  b.y)).rgb * 0.13;
+            blurCol += cam(vec2(0.0, -b.y)).rgb * 0.13;
+            blurCol += cam(vec2( b.x,  b.y)).rgb * 0.07;
+            blurCol += cam(vec2(-b.x,  b.y)).rgb * 0.07;
+            blurCol += cam(vec2( b.x, -b.y)).rgb * 0.07;
+            blurCol += cam(vec2(-b.x, -b.y)).rgb * 0.07;
+            // Extra wide haze taps
+            blurCol += cam(vec2(2.0*b.x, 0.0)).rgb * 0.04;
+            blurCol += cam(vec2(-2.0*b.x, 0.0)).rgb * 0.04;
+            blurCol += cam(vec2(0.0, 2.0*b.y)).rgb * 0.04;
+            blurCol += cam(vec2(0.0,-2.0*b.y)).rgb * 0.04;
+            blurCol += cam(vec2(1.6*b.x, 1.6*b.y)).rgb * 0.03;
+            blurCol += cam(vec2(-1.6*b.x, 1.6*b.y)).rgb * 0.03;
 
-            if (isLiquid > 0.5) {
-                vec3 viewDir   = vec3(0.0, 0.0, 1.0);
-                vec3 mainLight = normalize(vec3(0.4, 0.7, 1.0));
-                float lap = (cl + cr + tc + bc) * 0.25 - data;
+            float luma = dot(blurCol, vec3(0.299, 0.587, 0.114));
+            vec3 cool = mix(blurCol, vec3(luma), 0.55) * vec3(0.82, 0.90, 1.06);
+            cool = mix(cool, vec3(0.78, 0.88, 1.05), 0.22);
 
-                float waveOnly = decode(texture2D(uWave, uv).r);
-                float grooveMask = clamp(-dentOnly * 10.0, 0.0, 1.0);
-                float waveMask = smoothstep(0.012, 0.06, abs(waveOnly));
-                float activeMask = clamp(grooveMask + waveMask, 0.0, 1.0);
+            // Soft frost grain / ice mist
+            float g1 = hash21(uv * uResolution * 0.35 + floor(uTime * 2.0));
+            float g2 = hash21(uv * uResolution * 0.9 + 17.0);
+            float grain = (g1 * 0.65 + g2 * 0.35 - 0.5) * 0.07 * frostStr;
+            vec3 frost = cool + vec3(grain + 0.03);
+            frost = mix(frost, vec3(0.88, 0.93, 1.02), 0.12 * frostStr);
 
-                // Idle ≈ clear camera; refraction only where groove/ripples exist
-                float refractStr = 0.48 * uIntensity;
-                vec2 refractOffset = grad * refractStr * aspect * activeMask;
-                float lensStr = 0.14 * uIntensity;
-                vec2 gradDir  = grad / max(gradLen, 0.001);
-                vec2 lensOffset = gradDir * lap * lensStr * aspect * activeMask;
-                vec2 totalOffset = refractOffset + lensOffset;
+            // Soft ring modulation on frost only (not busy on clear ink)
+            float waveMask = smoothstep(0.02, 0.09, abs(waveOnly));
+            frost += vec3(0.04, 0.05, 0.07) * waveMask * waveOnly * 0.8;
 
-                float dispersion = clamp(gradLen * 0.12, 0.0, 0.08) * activeMask;
-                vec2 rOff = totalOffset * (1.0 + dispersion);
-                vec2 bOff = totalOffset * (1.0 - dispersion);
-                // Blur only on strong activity — keeps page sharp when idle
-                float blur = gradLen * 0.55 * activeMask;
-                if (activeMask < 0.08) {
-                    color = cam(vec2(0.0)).rgb;
-                } else {
-                    color.r = (cam(rOff).r + cam(rOff + texel * blur).r + cam(rOff - texel * blur).r) / 3.0;
-                    color.g = (cam(totalOffset).g + cam(totalOffset + texel * blur).g + cam(totalOffset - texel * blur).g) / 3.0;
-                    color.b = (cam(bOff).b + cam(bOff + texel * blur).b + cam(bOff - texel * blur).b) / 3.0;
-                }
+            float wipe = smoothstep(0.08, 0.72, clearMask);
+            vec3 color = mix(frost, sharp, wipe);
 
-                // Clear readable groove: darker cooler trough driven by dentOnly
-                float depthDrive = dentOnly * 2.6 + waveOnly * 1.2;
-                float brightness = 1.0 + clamp(depthDrive, -0.48, 0.35);
-                color *= mix(1.0, brightness, clamp(grooveMask + waveMask * 0.7, 0.0, 1.0));
-                color = mix(color, color * vec3(0.62, 0.82, 1.12), grooveMask * 0.62);
-                float valleyMask = clamp(-waveOnly * 8.0, 0.0, 1.0);
-                color = mix(color, color * vec3(0.78, 0.90, 1.06), valleyMask * 0.35 * waveMask);
-                float crestMask = clamp(waveOnly * 10.0, 0.0, 1.0);
-                color = mix(color, color * vec3(1.05, 1.02, 0.95), crestMask * 0.28 * waveMask);
-
-                float zN = 0.85 / (uIntensity + 0.01);
-                zN *= mix(1.0, 0.62, grooveMask);
-                vec3 normal  = normalize(vec3(-grad.x, -grad.y, zN));
-                float cosTheta = max(dot(normal, viewDir), 0.0);
-                float fresnel  = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
-                fresnel = mix(fresnel, min(fresnel * 1.45, 1.0), grooveMask);
-
-                vec2 reflUV  = totalOffset * -1.4 * aspect;
-                vec3 reflection = cam(reflUV).rgb;
-                reflection = mix(reflection, reflection * vec3(0.88, 0.94, 1.0), 0.28);
-                color = mix(color, reflection, fresnel * clamp(uIntensity * 0.45, 0.0, 0.7) * activeMask);
-
-                vec3 halfVec    = normalize(mainLight + viewDir);
-                float NdotH     = max(dot(normal, halfVec), 0.0);
-                float specSharp = pow(NdotH, 200.0) * 2.4 * activeMask;
-                float specBroad = pow(NdotH, 32.0)  * 0.28 * activeMask;
-                float rim = pow(1.0 - cosTheta, 3.0) * grooveMask * 0.65;
-                color += vec3(specSharp + specBroad + rim) * uIntensity;
-
-                float causticMask = grooveMask * smoothstep(0.01, 0.06, abs(lap)) * 0.5
-                                  + waveMask * smoothstep(0.02, 0.08, abs(waveOnly)) * 0.35;
-                color += vec3(0.95, 0.98, 1.0) * causticMask * uIntensity * 0.28;
-
-                // Very subtle idle water tint only — no crawling blur
-                color *= mix(vec3(0.97, 0.985, 1.0), vec3(1.0), clamp(activeMask * 4.0, 0.0, 1.0));
-            }
+            // Hairline sheen on clear stroke edge (glass wipe rim)
+            float rim = smoothstep(0.02, 0.12, clearEdge) * wipe;
+            color += vec3(0.55, 0.7, 0.9) * rim * 0.12;
 
             if (isCrystal > 0.5) {
-                float steps = 18.0;
-                vec2 facetGrad = floor(grad * steps) / steps;
-                vec2 offset    = facetGrad * 0.32 * uIntensity * aspect;
-                color = cam(offset).rgb;
-
-                vec2 gradR = vec2(
-                    sampleH(uv + vec2(texel.x, 0.0)) - sampleH(uv - vec2(texel.x, 0.0)),
-                    sampleH(uv + vec2(0.0, texel.y)) - sampleH(uv - vec2(0.0, texel.y))
-                );
-                float edgeH = length(floor(grad * steps) - floor(gradR * steps));
-                float edgeMask = clamp(edgeH, 0.0, 1.0);
-                vec3 edgeCol = vec3(0.75, 0.90, 1.0) * edgeMask * gradLen * uIntensity * 4.0;
-                color += edgeCol;
-                float facetBright = 0.5 + 0.5 * dot(normalize(vec3(facetGrad, 0.5)), normalize(vec3(0.3, 0.6, 1.0)));
-                color *= mix(1.0, facetBright, gradLen * 3.0 * uIntensity);
-                // Persistent grooves tint crystal slightly cooler in valleys
-                float gMask = clamp(-dentOnly * 8.0, 0.0, 1.0);
-                color = mix(color, color * vec3(0.85, 0.92, 1.08), gMask * 0.4);
+                // Faceted ice over the same frost/clear base
+                float steps = 14.0;
+                vec2 facet = floor(clearGrad * steps * 8.0) / steps;
+                vec3 facetCam = cam(facet * 0.08 * aspect * wipe).rgb;
+                color = mix(frost, facetCam, wipe);
+                float edgeMask = clearEdge * 6.0 * wipe;
+                color += vec3(0.7, 0.88, 1.0) * clamp(edgeMask, 0.0, 1.0) * 0.25;
+                color = mix(color, color * vec3(0.9, 0.95, 1.08), (1.0 - wipe) * 0.3);
             }
+
+            // Liquid is the frost/clear look; crystal branch already overwrote color when active
+            if (isLiquid > 0.5) { color = color; }
 
             gl_FragColor = vec4(color, 1.0);
         }
     </script>
 
-    <!-- Clear / fill mid-point (zero height) -->
+    <!-- Clear / fill (uFill: 0.5 = wave zero, 0.0 = full frost) -->
     <script id="fs-clear" type="x-shader/x-fragment">
         precision highp float;
+        uniform float uFill;
         void main() {
-            gl_FragColor = vec4(0.5, 0.0, 0.0, 1.0);
+            gl_FragColor = vec4(uFill, 0.0, 0.0, 1.0);
         }
     </script>
 
@@ -412,7 +372,7 @@
         let mode = 0;
         let intensity = 1.5;
         let radiusMult = 1.0;
-        let damping = 0.975;
+        let damping = 0.94;
         let cameraTex, video;
         let handsInitialized = false;
         let currentVideoScale = [1.0, 1.0];
@@ -506,15 +466,32 @@
             return curled >= 3;
         }
 
+        // MediaPipe selfieMode mirrors landmarks to match a mirrored selfie preview.
+        // Camera shader uses the same mirrorX — do NOT double-flip here.
         function mapLandmarkToScreen(lm) {
             let screenX = (lm.x - 0.5) / currentVideoScale[0] + 0.5;
             let screenY = (lm.y - 0.5) / currentVideoScale[1] + 0.5;
-            const x = currentFacingMode === 'user' ? (1.0 - screenX) : screenX;
-            return { x, y: screenY };
+            return { x: screenX, y: screenY };
         }
 
         let currentFacingMode = 'user';
         let videoStream = null;
+        let handsInstance = null;
+
+        function mirrorPreview() {
+            return currentFacingMode === 'user';
+        }
+
+        function applyHandsOptions() {
+            if (!handsInstance) return;
+            handsInstance.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 0,
+                minDetectionConfidence: 0.68,
+                minTrackingConfidence: 0.68,
+                selfieMode: mirrorPreview()
+            });
+        }
 
         async function initCamera() {
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -535,17 +512,14 @@
                 });
                 video.srcObject = videoStream;
                 await video.play();
+                applyHandsOptions();
 
                 if (!handsInitialized) {
                     const hands = new Hands({
                         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
                     });
-                    hands.setOptions({
-                        maxNumHands: 2,
-                        modelComplexity: 0,
-                        minDetectionConfidence: 0.68,
-                        minTrackingConfidence: 0.68
-                    });
+                    handsInstance = hands;
+                    applyHandsOptions();
                     hands.onResults((results) => {
                         prevIndexTip.x = indexTip.x;
                         prevIndexTip.y = indexTip.y;
@@ -644,11 +618,12 @@
             gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
         }
 
-        function clearTarget(fbo, tex) {
+        function clearTarget(fbo, fill) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
             gl.viewport(0, 0, simW, simH);
             gl.useProgram(programs.clear);
             bindQuad(programs.clear);
+            gl.uniform1f(gl.getUniformLocation(programs.clear, 'uFill'), fill);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
 
@@ -673,11 +648,11 @@
             dentFboB = createFBO(gl, dentTexB);
             dentReadIsA = true;
 
-            clearTarget(waveFboA, waveTexA);
-            clearTarget(waveFboB, waveTexB);
-            clearTarget(waveFboC, waveTexC);
-            clearTarget(dentFboA, dentTexA);
-            clearTarget(dentFboB, dentTexB);
+            clearTarget(waveFboA, 0.5);
+            clearTarget(waveFboB, 0.5);
+            clearTarget(waveFboC, 0.5);
+            clearTarget(dentFboA, 0.0);
+            clearTarget(dentFboB, 0.0);
 
             // Restored persistent strokes after resize
             restampAllStrokes();
@@ -717,8 +692,8 @@
         }
 
         function clearDentField() {
-            clearTarget(dentFboA, dentTexA);
-            clearTarget(dentFboB, dentTexB);
+            clearTarget(dentFboA, 0.0);
+            clearTarget(dentFboB, 0.0);
             dentReadIsA = true;
         }
 
@@ -729,7 +704,7 @@
             for (let s = 0; s < all.length; s++) {
                 const stroke = all[s];
                 const pts = stroke.points;
-                const depth = 0.55 * (stroke.intensity || intensity);
+                const depth = Math.min(1.0, 0.7 + 0.2 * (stroke.intensity || intensity));
                 const rad = stroke.radius || radiusMult;
                 if (pts.length === 1) {
                     stampSegment(pts[0].x, pts[0].y, pts[0].x, pts[0].y, depth, rad);
@@ -744,14 +719,14 @@
         function onIndexDraw(x, y) {
             if (!currentStroke) {
                 currentStroke = { points: [{ x, y }], intensity, radius: radiusMult };
-                stampSegment(x, y, x, y, 0.55 * intensity, radiusMult);
+                stampSegment(x, y, x, y, Math.min(1.0, 0.7 + 0.2 * intensity), radiusMult);
                 return;
             }
             const last = currentStroke.points[currentStroke.points.length - 1];
             const dx = x - last.x, dy = y - last.y;
             if (dx * dx + dy * dy < 0.00005) return; // skip tiny jitter
             currentStroke.points.push({ x, y });
-            stampSegment(last.x, last.y, x, y, 0.55 * intensity, radiusMult);
+            stampSegment(last.x, last.y, x, y, Math.min(1.0, 0.7 + 0.2 * intensity), radiusMult);
         }
 
         function endCurrentStroke() {
@@ -779,9 +754,9 @@
             endCurrentStroke();
             strokes.length = 0;
             clearDentField();
-            clearTarget(waveFboA, waveTexA);
-            clearTarget(waveFboB, waveTexB);
-            clearTarget(waveFboC, waveTexC);
+            clearTarget(waveFboA, 0.5);
+            clearTarget(waveFboB, 0.5);
+            clearTarget(waveFboC, 0.5);
         }
 
         function swapWave() {
@@ -855,7 +830,7 @@
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMode'), mode);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uTime'), time * 0.001);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uIntensity'), intensity);
-            gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'), currentFacingMode === 'user' ? 1.0 : 0.0);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'), mirrorPreview() ? 1.0 : 0.0);
 
             if (video && video.videoWidth) {
                 let screenAspect = width / height;
