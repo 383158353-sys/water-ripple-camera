@@ -105,7 +105,7 @@
 
     <div id="loading">Initializing Reality...</div>
     <div id="error-log"></div>
-    <div id="hint-cn">食指绘制 · 右手握拳撤销</div>
+    <div id="hint-cn">食指点水波 · WAVE调大小 · 握拳/UNDO撤销</div>
 
     <div id="top-controls" style="position: absolute; top: 20px; right: 20px; z-index: 20; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%;">
         <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">UNDO</button>
@@ -121,8 +121,8 @@
             <input type="range" id="intensity" min="0.1" max="3.0" step="0.1" value="1.5" style="width: 65%; accent-color: #fff;">
         </div>
         <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-            <label for="radius" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">BRUSH</label>
-            <input type="range" id="radius" min="0.2" max="4.0" step="0.1" value="1.0" style="width: 65%; accent-color: #fff;">
+            <label for="radius" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">WAVE</label>
+            <input type="range" id="radius" min="0.25" max="3.5" step="0.05" value="1.0" style="width: 65%; accent-color: #fff;">
         </div>
         <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
             <label for="damping" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">DECAY</label>
@@ -170,12 +170,12 @@
                 vec2 ba = (uBrushB - uBrushA) * aspect;
                 float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
                 float dist = length(pa - ba * h);
-                // Crisp liquid brush: constant width, soft but tight edge (no blooming lip)
-                float r = 0.025 * uRadius;
-                float brush = smoothstep(r, r * 0.35, dist);
-                // Slight Gaussian core for rounded trough without widening stroke
-                float core = exp(-(dist * dist) / max(1.15 * r * r, 1e-6));
-                brush = clamp(max(brush * 0.85, core * 0.95), 0.0, 1.0);
+                // Readable wet groove; WAVE (uRadius) sets footprint size
+                float r = 0.022 * uRadius;
+                float brush = smoothstep(r * 1.05, r * 0.32, dist);
+                float core = exp(-(dist * dist) / max(1.05 * r * r, 1e-6));
+                float lip = smoothstep(r * 1.25, r * 0.75, dist) * (1.0 - smoothstep(r * 0.65, r * 0.22, dist));
+                brush = clamp(max(brush * 0.88, core * 0.95) + lip * 0.12, 0.0, 1.0);
                 // Carve down (more negative wins) — persistent, never damped
                 float carved = -uDepth * brush;
                 outH = min(prev, carved);
@@ -219,30 +219,42 @@
             float avg = (p10 + p12 + p01 + p21) * 0.2 + (p00 + p20 + p02 + p22) * 0.05;
             float val = avg * 2.0 - prev;
 
-            float ampFactor = 1.0 - smoothstep(0.0, 0.08, abs(val)) * 0.008;
+            float ampFactor = 1.0 - smoothstep(0.0, 0.08, abs(val)) * 0.01;
             val *= uDamping * ampFactor;
 
-            // No ambient noise — idle surface stays clear.
-            // No continuous dent coupling — grooves stay sharp; waves come only from tip rings.
+            // Soft energy locked to persistent groove rim (hugs stroke, no screen-wide clutter)
+            float dentH = decode(texture2D(uDent, vUv).r);
+            float dL = decode(texture2D(uDent, vUv + vec2(-texel.x * 1.5, 0.0)).r);
+            float dR = decode(texture2D(uDent, vUv + vec2( texel.x * 1.5, 0.0)).r);
+            float dD = decode(texture2D(uDent, vUv + vec2(0.0, -texel.y * 1.5)).r);
+            float dU = decode(texture2D(uDent, vUv + vec2(0.0,  texel.y * 1.5)).r);
+            float dentEdge = length(vec2(dR - dL, dU - dD)) * 0.5;
+            float groove = clamp(-dentH * 8.0, 0.0, 1.0);
+            float rimBand = smoothstep(0.02, 0.12, dentEdge) * smoothstep(0.05, 0.55, groove)
+                          * (1.0 - smoothstep(0.85, 1.0, groove));
+            if (rimBand > 0.001) {
+                float phase = uTime * 6.5 + groove * 40.0 + vUv.x * 36.0;
+                val += sin(phase) * rimBand * 0.018 * clamp(uIntensity, 0.4, 2.2);
+            }
 
-            // Outward ripple ring around moving index tip (dent stamp carries the stroke shape)
+            // Moving tip: tight annulus hugging WAVE radius (not huge expanding rings)
             if (uIndex.z > 0.5) {
                 vec2 currUV = vec2(uIndex.x, 1.0 - uIndex.y);
                 vec2 prevUV = (uPrevIndex.z > 0.5)
                     ? vec2(uPrevIndex.x, 1.0 - uPrevIndex.y)
                     : currUV;
-                // Distance from current tip (circular rings radiate from tip, not fat stroke blur)
+                float move = length((currUV - prevUV) * aspect);
                 vec2 dTip = (vUv - currUV) * aspect;
                 float dist = length(dTip);
-                float brushR = 0.025 * uRadius;
-                float ringInner = brushR * 1.05;
-                float ringOuter = brushR * 2.6;
-                float vel = length((currUV - prevUV) * aspect) * uResolution.y;
-                float force = 0.35 + clamp(vel * 0.014, 0.0, 0.85);
-                // Annulus only — keep center clear so the dent groove stays readable
-                float ring = smoothstep(ringInner * 0.75, ringInner, dist)
-                           * (1.0 - smoothstep(ringOuter * 0.75, ringOuter, dist));
-                val += ring * force * uIntensity * 0.22;
+                float brushR = 0.022 * uRadius; // WAVE slider footprint
+                float ringInner = brushR * 0.78;
+                float ringOuter = brushR * 1.55;
+                float ring = smoothstep(ringInner, ringInner + brushR * 0.2, dist)
+                           * (1.0 - smoothstep(ringOuter - brushR * 0.2, ringOuter, dist));
+                float force = 0.22 + clamp(move * 28.0, 0.0, 0.75);
+                if (move > 0.0025) {
+                    val += ring * force * uIntensity * 0.16;
+                }
             }
 
             gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 0.0, 1.0);
@@ -332,11 +344,13 @@
                     color.b = (cam(bOff).b + cam(bOff + texel * blur).b + cam(bOff - texel * blur).b) / 3.0;
                 }
 
-                // Clear readable groove: darker cooler trough driven by dentOnly
-                float depthDrive = dentOnly * 2.6 + waveOnly * 1.2;
-                float brightness = 1.0 + clamp(depthDrive, -0.48, 0.35);
+                // Clear readable wet groove: darker cooler trough + rim catchlight
+                float depthDrive = dentOnly * 2.9 + waveOnly * 1.15;
+                float brightness = 1.0 + clamp(depthDrive, -0.52, 0.38);
                 color *= mix(1.0, brightness, clamp(grooveMask + waveMask * 0.7, 0.0, 1.0));
-                color = mix(color, color * vec3(0.62, 0.82, 1.12), grooveMask * 0.62);
+                color = mix(color, color * vec3(0.58, 0.80, 1.14), grooveMask * 0.68);
+                float grooveEdge = smoothstep(0.08, 0.55, grooveMask) * (1.0 - smoothstep(0.7, 0.98, grooveMask));
+                color += vec3(0.55, 0.75, 0.95) * grooveEdge * abs(waveOnly) * 0.45;
                 float valleyMask = clamp(-waveOnly * 8.0, 0.0, 1.0);
                 color = mix(color, color * vec3(0.78, 0.90, 1.06), valleyMask * 0.35 * waveMask);
                 float crestMask = clamp(waveOnly * 10.0, 0.0, 1.0);
@@ -488,10 +502,18 @@
             if (!tip || tip.x < 0.02 || tip.x > 0.98 || tip.y < 0.02 || tip.y > 0.98) return false;
             const dTip = dist3(tip, mcp);
             const dPip = dist3(pip, mcp);
-            if (dTip < 0.045) return false; // tip too close to MCP = not clearly present/extended
-            if (dTip <= dPip * 1.25) return false;
+            if (dTip < 0.05) return false; // tip too close to MCP = not clearly present/extended
+            if (dTip <= dPip * 1.28) return false;
             // Tip should be further from wrist than PIP (clearly sticking out)
-            if (dist3(tip, wrist) <= dist3(pip, wrist) * 1.05) return false;
+            if (dist3(tip, wrist) <= dist3(pip, wrist) * 1.08) return false;
+            // Other fingers mostly curled helps "pointing" accuracy
+            const midTip = hand[12], ringTip = hand[16], pinkyTip = hand[20];
+            const palm = hand[9];
+            let othersCurled = 0;
+            if (dist3(midTip, palm) < 0.14) othersCurled++;
+            if (dist3(ringTip, palm) < 0.14) othersCurled++;
+            if (dist3(pinkyTip, palm) < 0.14) othersCurled++;
+            if (othersCurled < 1) return false;
             return true;
         }
 
@@ -506,15 +528,73 @@
             return curled >= 3;
         }
 
+        // selfieMode mirrors landmarks to match mirrored front camera (uMirror).
+        // Do NOT also flip X here — that double-mirrors the tip off the finger.
         function mapLandmarkToScreen(lm) {
             let screenX = (lm.x - 0.5) / currentVideoScale[0] + 0.5;
             let screenY = (lm.y - 0.5) / currentVideoScale[1] + 0.5;
-            const x = currentFacingMode === 'user' ? (1.0 - screenX) : screenX;
-            return { x, y: screenY };
+            return { x: screenX, y: screenY };
         }
 
         let currentFacingMode = 'user';
         let videoStream = null;
+        let handsInstance = null;
+        let tipSmooth = { x: 0.5, y: 0.5, init: false };
+        let jumpCandidate = null;
+        let jumpStable = 0;
+        const TIP_LERP = 0.42;
+        const JUMP_REJECT = 0.12; // screen UV; reject large jumps unless stable
+
+        function mirrorPreview() {
+            return currentFacingMode === 'user';
+        }
+
+        function applyHandsOptions() {
+            if (!handsInstance) return;
+            handsInstance.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.66,
+                minTrackingConfidence: 0.66,
+                selfieMode: mirrorPreview()
+            });
+        }
+
+        function smoothTip(raw) {
+            if (!tipSmooth.init) {
+                tipSmooth.x = raw.x;
+                tipSmooth.y = raw.y;
+                tipSmooth.init = true;
+                jumpCandidate = null;
+                jumpStable = 0;
+                return { x: raw.x, y: raw.y };
+            }
+            const dx = raw.x - tipSmooth.x;
+            const dy = raw.y - tipSmooth.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > JUMP_REJECT) {
+                // Need 2–3 stable frames near the new position before accepting
+                if (jumpCandidate && Math.hypot(raw.x - jumpCandidate.x, raw.y - jumpCandidate.y) < 0.04) {
+                    jumpStable++;
+                } else {
+                    jumpCandidate = { x: raw.x, y: raw.y };
+                    jumpStable = 1;
+                }
+                if (jumpStable < 3) {
+                    return { x: tipSmooth.x, y: tipSmooth.y };
+                }
+                tipSmooth.x = raw.x;
+                tipSmooth.y = raw.y;
+                jumpCandidate = null;
+                jumpStable = 0;
+                return { x: tipSmooth.x, y: tipSmooth.y };
+            }
+            jumpCandidate = null;
+            jumpStable = 0;
+            tipSmooth.x += (raw.x - tipSmooth.x) * TIP_LERP;
+            tipSmooth.y += (raw.y - tipSmooth.y) * TIP_LERP;
+            return { x: tipSmooth.x, y: tipSmooth.y };
+        }
 
         async function initCamera() {
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -535,17 +615,15 @@
                 });
                 video.srcObject = videoStream;
                 await video.play();
+                tipSmooth.init = false;
+                applyHandsOptions();
 
                 if (!handsInitialized) {
                     const hands = new Hands({
                         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
                     });
-                    hands.setOptions({
-                        maxNumHands: 2,
-                        modelComplexity: 0,
-                        minDetectionConfidence: 0.68,
-                        minTrackingConfidence: 0.68
-                    });
+                    handsInstance = hands;
+                    applyHandsOptions();
                     hands.onResults((results) => {
                         prevIndexTip.x = indexTip.x;
                         prevIndexTip.y = indexTip.y;
@@ -566,25 +644,31 @@
                                 }
 
                                 if (isIndexExtended(hand)) {
-                                    const pt = mapLandmarkToScreen(hand[8]);
-                                    // Prefer drawing hand that is not fisted
-                                    if (!(label === 'Right' && isFist(hand))) {
-                                        bestIndex = pt;
-                                    }
+                                    const tip = hand[8];
+                                    // Landmark 8 only; must stay in frame
+                                    if (!tip || tip.x < 0.02 || tip.x > 0.98 || tip.y < 0.02 || tip.y > 0.98) continue;
+                                    if (label === 'Right' && isFist(hand)) continue;
+                                    bestIndex = mapLandmarkToScreen(tip);
                                 }
                             }
                         }
 
                         if (rightFist) {
+                            tipSmooth.init = false;
+                            indexTip.active = 0;
+                            endCurrentStroke();
                             tryUndo();
+                            return;
                         }
 
                         if (bestIndex) {
-                            indexTip.x = bestIndex.x;
-                            indexTip.y = bestIndex.y;
+                            const sm = smoothTip(bestIndex);
+                            indexTip.x = sm.x;
+                            indexTip.y = sm.y;
                             indexTip.active = 1;
-                            onIndexDraw(bestIndex.x, bestIndex.y);
+                            onIndexDraw(sm.x, sm.y);
                         } else {
+                            tipSmooth.init = false;
                             indexTip.active = 0;
                             endCurrentStroke();
                         }
@@ -855,7 +939,7 @@
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMode'), mode);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uTime'), time * 0.001);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uIntensity'), intensity);
-            gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'), currentFacingMode === 'user' ? 1.0 : 0.0);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'), mirrorPreview() ? 1.0 : 0.0);
 
             if (video && video.videoWidth) {
                 let screenAspect = width / height;
