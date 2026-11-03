@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: canvas-record-btn 2026-11-04 -->
+    <!-- build: finger-track-fix 2026-11-04b -->
     <style>
         * {
             margin: 0;
@@ -388,6 +388,24 @@
             text-align: center;
         }
 
+
+        #finger-cursor {
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            margin-left: -7px;
+            margin-top: -7px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.95);
+            background: rgba(74, 163, 255, 0.55);
+            box-shadow: 0 0 10px rgba(74,163,255,0.7), 0 0 0 1px rgba(0,0,0,0.35);
+            pointer-events: none;
+            z-index: 40;
+            display: none;
+            transform: translate3d(0,0,0);
+            will-change: left, top, opacity;
+        }
+
         #hint-cn {
             position: absolute;
             top: 20px;
@@ -408,6 +426,7 @@
     <div id="loading">初始化中…</div>
     <div id="error-log"></div>
     <div id="hint-cn">凹痕边缘硬度 · 笔触/透光颜色 · 原版拖动波纹</div>
+    <div id="finger-cursor" aria-hidden="true"></div>
 
     <div id="top-controls" style="position: absolute; top: 20px; right: 20px; z-index: 20; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%;">
         <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">撤销</button>
@@ -1152,16 +1171,20 @@
         }
 
         function isIndexExtended(hand) {
+            // Writing poses: index often slightly curled — keep this soft.
             const tip = hand[8], dip = hand[7], pip = hand[6], mcp = hand[5], wrist = hand[0];
-            if (!tip || tip.x < 0.01 || tip.x > 0.99 || tip.y < 0.01 || tip.y > 0.99) return false;
+            if (!tip || !mcp || !pip) return false;
+            // Allow near edges; only reject fully off-frame
+            if (tip.x < -0.02 || tip.x > 1.02 || tip.y < -0.02 || tip.y > 1.02) return false;
             const dTip = dist3(tip, mcp);
             const dPip = dist3(pip, mcp);
-            if (dTip < 0.035) return false;
-            // Softer: allow natural writing pose (not only rigid "pointing")
-            if (dTip <= dPip * 1.08) return false;
-            if (dist3(tip, wrist) <= dist3(pip, wrist) * 1.02) return false;
-            // Prefer tip beyond DIP along finger chain (writing / pointing)
-            if (dip && dist3(tip, mcp) < dist3(dip, mcp) * 0.98) return false;
+            if (dTip < 0.028) return false; // collapsed knuckle = not pointing
+            // Soft: tip only needs to be roughly as far as PIP (slight curl OK)
+            if (dTip < dPip * 0.92) return false;
+            // Tip a bit farther from wrist than PIP (writing / pointing)
+            if (wrist && dist3(tip, wrist) < dist3(pip, wrist) * 0.96) return false;
+            // DIP check optional/soft — writing curls tip past DIP sometimes
+            if (dip && dist3(tip, mcp) < dist3(dip, mcp) * 0.90) return false;
             return true;
         }
 
@@ -1175,14 +1198,19 @@
         }
 
         function isFist(hand) {
-            const palm = hand[9];
+            // True closed fist for undo. Must NOT fire on writing pose
+            // (index out + other fingers curled) — that was killing tip tracking.
+            if (isIndexExtended(hand)) return false;
+            const palm = hand[9] || hand[0];
             const tips = [8, 12, 16, 20];
             let curled = 0;
             for (let i = 0; i < tips.length; i++) {
-                if (dist3(hand[tips[i]], palm) < 0.11) curled++;
+                if (dist3(hand[tips[i]], palm) < 0.095) curled++;
             }
-            // Index MCP also near palm helps reject "pointing"
-            return curled >= 3;
+            // Need most tips near palm; index MCP also tucked helps
+            const mcp = hand[5];
+            const indexTucked = !mcp || dist3(hand[8], palm) < 0.11;
+            return curled >= 3 && indexTucked;
         }
 
         // selfieMode mirrors landmarks to match mirrored front camera (uMirror).
@@ -1199,13 +1227,13 @@
             };
         }
 
-        // Blend tip (8) with DIP (7) — stabler writing point, still follows fingertip
+        // Prefer landmark 8 almost pure so stroke stays on the fingertip
         function tipFromHand(hand) {
             const tip = hand[8];
             const dip = hand[7];
             if (!tip) return null;
             const lm = dip
-                ? { x: tip.x * 0.82 + dip.x * 0.18, y: tip.y * 0.82 + dip.y * 0.18, z: tip.z }
+                ? { x: tip.x * 0.96 + dip.x * 0.04, y: tip.y * 0.96 + dip.y * 0.04, z: tip.z }
                 : tip;
             return mapLandmarkToScreen(lm);
         }
@@ -1215,11 +1243,14 @@
         let handsInstance = null;
         let tipSmooth = { x: 0.5, y: 0.5, vx: 0, vy: 0, init: false };
         let tipLostSince = 0;
-        const TIP_HOLD_MS = 220; // keep stroke alive through brief landmark drops
-        // Adaptive follow: fast motion → almost 1:1; idle → light denoise
-        const TIP_LERP_MIN = 0.38;
-        const TIP_LERP_MAX = 0.92;
-        const JUMP_SNAP = 0.22; // only snap-hold truly wild outliers
+        const TIP_HOLD_MS = 280; // keep stroke alive through brief landmark drops
+        // Higher lerp = less lag, tip glued to finger while writing
+        const TIP_LERP_MIN = 0.58;
+        const TIP_LERP_MAX = 0.98;
+        const JUMP_SNAP = 0.42; // only reject truly wild outliers (fewer false rejects)
+        let fistHoldFrames = 0;
+        const FIST_CONFIRM_FRAMES = 8; // need clear fist for several frames before undo
+        let fingerCursorEl = null;
 
         function mirrorPreview() {
             return currentFacingMode === 'user';
@@ -1230,10 +1261,22 @@
             handsInstance.setOptions({
                 maxNumHands: 2,
                 modelComplexity: 1,
-                minDetectionConfidence: 0.55,
-                minTrackingConfidence: 0.50,
+                minDetectionConfidence: 0.50,
+                minTrackingConfidence: 0.45,
                 selfieMode: mirrorPreview()
             });
+        }
+
+        function updateFingerCursor(active, x, y) {
+            if (!fingerCursorEl) fingerCursorEl = document.getElementById('finger-cursor');
+            if (!fingerCursorEl) return;
+            if (!fingerGestureEnabled || !active) {
+                fingerCursorEl.style.display = 'none';
+                return;
+            }
+            fingerCursorEl.style.display = 'block';
+            fingerCursorEl.style.left = (x * 100) + 'vw';
+            fingerCursorEl.style.top = (y * 100) + 'vh';
         }
 
         function smoothTip(raw) {
@@ -1253,13 +1296,14 @@
             if (dist > JUMP_SNAP) {
                 const predX = tipSmooth.x + tipSmooth.vx;
                 const predY = tipSmooth.y + tipSmooth.vy;
-                if (Math.hypot(raw.x - predX, raw.y - predY) > JUMP_SNAP * 0.85) {
+                // Only hold if also far from velocity prediction
+                if (Math.hypot(raw.x - predX, raw.y - predY) > JUMP_SNAP * 1.05) {
                     return { x: tipSmooth.x, y: tipSmooth.y };
                 }
             }
 
             // Speed-adaptive lerp: writing strokes stay glued to the fingertip
-            const lerp = Math.min(TIP_LERP_MAX, TIP_LERP_MIN + dist * 6.5);
+            const lerp = Math.min(TIP_LERP_MAX, TIP_LERP_MIN + dist * 8.0);
             const nx = tipSmooth.x + dx * lerp;
             const ny = tipSmooth.y + dy * lerp;
             tipSmooth.vx = nx - tipSmooth.x;
@@ -1279,12 +1323,12 @@
             const dx = x - last.x;
             const dy = y - last.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            const step = 0.012; // denser stamps while writing fast
-            if (dist <= step * 1.35) {
+            const step = 0.007; // denser stamps while writing fast
+            if (dist <= step * 1.2) {
                 onIndexDraw(x, y, pressure);
                 return;
             }
-            const n = Math.min(12, Math.ceil(dist / step));
+            const n = Math.min(24, Math.ceil(dist / step));
             for (let i = 1; i <= n; i++) {
                 const t = i / n;
                 onIndexDraw(last.x + dx * t, last.y + dy * t, pressure);
@@ -1325,39 +1369,72 @@
                         let bestIndex = null;
                         let bestScore = -1;
                         let anyFist = false;
+                        const writingNow = !!(fingerGestureEnabled && (currentStroke || indexTip.active));
 
                         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                             for (let hi = 0; hi < results.multiHandLandmarks.length; hi++) {
                                 const hand = results.multiHandLandmarks[hi];
-                                if (isFist(hand)) {
-                                    anyFist = true;
+                                // Prefer index writing over fist — writing pose often has other fingers curled
+                                const indexOk = isIndexExtended(hand);
+                                if (indexOk) {
+                                    const mapped = tipFromHand(hand);
+                                    if (!mapped) continue;
+                                    // Keep tip on-screen (cover crop may push slightly OOB)
+                                    if (mapped.x < -0.08 || mapped.x > 1.08 || mapped.y < -0.08 || mapped.y > 1.08) continue;
+                                    const score = indexExtendScore(hand);
+                                    if (score > bestScore) {
+                                        bestScore = score;
+                                        bestIndex = mapped;
+                                    }
                                     continue;
                                 }
-                                if (!isIndexExtended(hand)) continue;
-                                const mapped = tipFromHand(hand);
-                                if (!mapped) continue;
-                                // Keep tip on-screen (cover crop may push slightly OOB)
-                                if (mapped.x < -0.05 || mapped.x > 1.05 || mapped.y < -0.05 || mapped.y > 1.05) continue;
-                                const score = indexExtendScore(hand);
-                                if (score > bestScore) {
-                                    bestScore = score;
-                                    bestIndex = mapped;
-                                }
+                                if (isFist(hand)) anyFist = true;
                             }
                         }
 
-                        // Fist = undo only when not mid pointer-draw
+                        // Fist undo: KEEP feature, but never fight mid-write.
+                        // While finger-drawing / stroke active / tip hold: ignore fist entirely.
+                        // Only undo after tip clearly gone AND fist held for several frames.
                         if (anyFist && !bestIndex && !pointerDrawActive) {
+                            const midWrite = !!(fingerGestureEnabled && (writingNow || currentStroke || indexTip.active));
+                            if (midWrite) {
+                                // Tip lost this frame but stroke still live — hold path, no undo
+                                fistHoldFrames = 0;
+                                if (indexTip.active && tipSmooth.init) {
+                                    if (!tipLostSince) tipLostSince = performance.now();
+                                    if (performance.now() - tipLostSince < TIP_HOLD_MS) {
+                                        updateFingerCursor(true, indexTip.x, indexTip.y);
+                                        return;
+                                    }
+                                    tipSmooth.init = false;
+                                    tipLostSince = 0;
+                                    indexTip.active = 0;
+                                    updateFingerCursor(false, 0, 0);
+                                    endCurrentStroke();
+                                    // stroke ended; do NOT undo yet — wait clear fist next frames
+                                    return;
+                                }
+                                return;
+                            }
+                            fistHoldFrames++;
+                            if (fistHoldFrames < FIST_CONFIRM_FRAMES) {
+                                return;
+                            }
+                            fistHoldFrames = 0;
                             tipSmooth.init = false;
                             tipLostSince = 0;
                             indexTip.active = 0;
+                            updateFingerCursor(false, 0, 0);
                             endCurrentStroke();
                             tryUndo();
                             return;
+                        } else {
+                            fistHoldFrames = 0;
                         }
 
                         if (pointerDrawActive) {
                             // Stylus/touch/mouse owns the stroke; hands only for undo fist
+                            updateFingerCursor(false, 0, 0);
                             return;
                         }
 
@@ -1366,16 +1443,19 @@
                             tipSmooth.init = false;
                             tipLostSince = 0;
                             indexTip.active = 0;
+                            updateFingerCursor(false, 0, 0);
                             endCurrentStroke();
                             return;
                         }
 
                         if (bestIndex) {
                             tipLostSince = 0;
+                            fistHoldFrames = 0;
                             const sm = smoothTip(bestIndex);
                             indexTip.x = sm.x;
                             indexTip.y = sm.y;
                             indexTip.active = 1;
+                            updateFingerCursor(true, sm.x, sm.y);
                             // Pressure from tip travel — keeps stroke lively along writing path
                             const spd = Math.hypot(tipSmooth.vx, tipSmooth.vy);
                             const pr = Math.max(0.28, Math.min(0.85, 0.62 - spd * 1.8));
@@ -1385,16 +1465,19 @@
                             if (!tipLostSince) tipLostSince = performance.now();
                             if (performance.now() - tipLostSince < TIP_HOLD_MS) {
                                 indexTip.active = 1;
+                                updateFingerCursor(true, indexTip.x, indexTip.y);
                             } else {
                                 tipSmooth.init = false;
                                 tipLostSince = 0;
                                 indexTip.active = 0;
+                                updateFingerCursor(false, 0, 0);
                                 endCurrentStroke();
                             }
                         } else {
                             tipSmooth.init = false;
                             tipLostSince = 0;
                             indexTip.active = 0;
+                            updateFingerCursor(false, 0, 0);
                             endCurrentStroke();
                         }
                     });
@@ -1972,10 +2055,12 @@
             if (!fingerGestureEnabled) {
                 tipSmooth.init = false;
                 tipLostSince = 0;
+                fistHoldFrames = 0;
                 if (!pointerDrawActive) {
                     indexTip.active = 0;
                     endCurrentStroke();
                 }
+                updateFingerCursor(false, 0, 0);
             }
             syncFingerBtn();
         });
