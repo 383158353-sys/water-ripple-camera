@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Reality Distorter - GPU Physics</title>
+    <title>水面交互</title>
     <style>
         * {
             margin: 0;
@@ -31,19 +31,52 @@
             object-fit: cover;
         }
 
-        #ui-overlay {
+        #panel {
             position: absolute;
-            bottom: 30px;
+            bottom: 18px;
             left: 50%;
             transform: translateX(-50%);
-            display: flex;
-            gap: 10px;
             z-index: 10;
-            background: rgba(0, 0, 0, 0.4);
-            padding: 10px;
-            border-radius: 50px;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: stretch;
+            background: rgba(0, 0, 0, 0.62);
+            padding: 12px 16px 14px;
+            border-radius: 18px;
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            width: min(92vw, 360px);
+            box-sizing: border-box;
+        }
+
+        #panel .mask-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        #panel .slider-row {
+            display: flex;
+            justify-content: space-between;
+            width: 100%;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #panel .slider-row label {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            color: #ddd;
+            white-space: nowrap;
+            min-width: 4.5em;
+        }
+
+        #panel .slider-row input[type=range] {
+            flex: 1;
+            accent-color: #fff;
         }
 
         .mode-btn {
@@ -103,45 +136,44 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
 
-    <div id="loading">Initializing Reality...</div>
+    <div id="loading">初始化中…</div>
     <div id="error-log"></div>
-    <div id="hint-cn">压感笔刷擦开蒙版 · 水波动态笔迹 · 上传底图</div>
+    <div id="hint-cn">压感笔刷擦开蒙版 · 停画后波纹慢慢停下</div>
 
     <div id="top-controls" style="position: absolute; top: 20px; right: 20px; z-index: 20; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%;">
-        <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">UNDO</button>
-        <button id="btn-clear" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">CLEAR</button>
+        <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">撤销</button>
+        <button id="btn-clear" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">清空</button>
         <button id="btn-upload" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">上传底图</button>
         <button id="btn-use-cam" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px); display:none;">摄像头底</button>
-        <button id="btn-camera" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">SWITCH CAM</button>
-        <button id="btn-hide" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">HIDE UI</button>
+        <button id="btn-camera" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">切换镜头</button>
+        <button id="btn-hide" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">隐藏界面</button>
         <input id="bg-file" type="file" accept="image/*" style="display:none;">
     </div>
-    <div id="show-hint" style="position: absolute; top: 40px; left: 50%; transform: translateX(-50%); color: rgba(255,255,255,0.6); font-size: 14px; font-weight: bold; display: none; z-index: 20; pointer-events: none; letter-spacing: 2px; text-shadow: 0 2px 4px rgba(0,0,0,0.8);">TAP ANYWHERE TO SHOW UI</div>
+    <div id="show-hint" style="position: absolute; top: 40px; left: 50%; transform: translateX(-50%); color: rgba(255,255,255,0.6); font-size: 14px; font-weight: bold; display: none; z-index: 20; pointer-events: none; letter-spacing: 2px; text-shadow: 0 2px 4px rgba(0,0,0,0.8);">点任意处显示界面</div>
 
-    <div id="controls" style="position: absolute; bottom: 90px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 12px; background: rgba(0,0,0,0.6); padding: 15px 25px; border-radius: 20px; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); width: 85%; max-width: 320px;">
-        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-            <label for="intensity" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">INTENSITY</label>
-            <input type="range" id="intensity" min="0.1" max="3.0" step="0.1" value="1.5" style="width: 65%; accent-color: #fff;">
+    <div id="panel">
+        <div class="mask-row">
+            <button class="mode-btn mask-btn" data-mask="0" style="padding:8px 14px; font-size:12px;">无蒙版</button>
+            <button class="mode-btn active mask-btn" data-mask="1" style="padding:8px 14px; font-size:12px;">水雾</button>
+            <button class="mode-btn mask-btn" data-mask="2" style="padding:8px 14px; font-size:12px;">冰块</button>
+            <button class="mode-btn mask-btn" data-mask="3" style="padding:8px 14px; font-size:12px;">凝露</button>
         </div>
-        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-            <label for="radius" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">WAVE<span style="font-weight:500;opacity:0.55;font-size:9px;"> ×压感</span></label>
-            <input type="range" id="radius" min="0.25" max="3.5" step="0.05" value="1.0" style="width: 65%; accent-color: #fff;">
+        <div class="slider-row">
+            <label for="radius">笔刷大小</label>
+            <input type="range" id="radius" min="0.25" max="3.5" step="0.05" value="1.0">
         </div>
-        <div style="width:100%; font-size:9px; color:rgba(255,255,255,0.4); letter-spacing:0.5px; text-align:center; margin-top:-4px;">INTENSITY × 压感 = 刻痕深度 · 轻触仍出细线</div>
-        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-            <label for="damping" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">DECAY</label>
-            <input type="range" id="damping" min="0.85" max="0.995" step="0.005" value="0.975" style="width: 65%; accent-color: #fff;">
+        <div class="slider-row">
+            <label for="blur">模糊程度</label>
+            <input type="range" id="blur" min="0" max="1.5" step="0.05" value="0.35">
         </div>
-    </div>
-    <div id="mask-overlay" style="position:absolute; bottom: 155px; left:50%; transform:translateX(-50%); z-index:10; display:flex; gap:8px; flex-wrap:wrap; justify-content:center; background:rgba(0,0,0,0.55); padding:8px 12px; border-radius:40px; backdrop-filter:blur(10px); border:1px solid rgba(255,255,255,0.1); max-width:92%;">
-        <button class="mode-btn active mask-btn" data-mask="0" style="padding:8px 14px; font-size:12px;">无蒙版</button>
-        <button class="mode-btn mask-btn" data-mask="1" style="padding:8px 14px; font-size:12px;">水雾</button>
-        <button class="mode-btn mask-btn" data-mask="2" style="padding:8px 14px; font-size:12px;">冰块</button>
-        <button class="mode-btn mask-btn" data-mask="3" style="padding:8px 14px; font-size:12px;">凝露</button>
-    </div>
-    <div id="ui-overlay">
-        <button class="mode-btn active" data-mode="0">LIQUID</button>
-        <button class="mode-btn" data-mode="1">CRYSTAL</button>
+        <div class="slider-row">
+            <label for="intensity">波纹强度</label>
+            <input type="range" id="intensity" min="0.2" max="2.5" step="0.05" value="1.0">
+        </div>
+        <div class="slider-row">
+            <label for="damping">波纹衰减</label>
+            <input type="range" id="damping" min="0.92" max="0.998" step="0.001" value="0.988">
+        </div>
     </div>
 
     <canvas id="glCanvas"></canvas>
@@ -182,10 +214,10 @@
                 float dist = length(pa - ba * h);
                 // Readable wet groove; WAVE (uRadius) sets footprint size
                 float r = 0.022 * uRadius;
-                float brush = smoothstep(r * 1.05, r * 0.32, dist);
-                float core = exp(-(dist * dist) / max(1.05 * r * r, 1e-6));
-                float lip = smoothstep(r * 1.25, r * 0.75, dist) * (1.0 - smoothstep(r * 0.65, r * 0.22, dist));
-                brush = clamp(max(brush * 0.88, core * 0.95) + lip * 0.12, 0.0, 1.0);
+                float brush = smoothstep(r * 1.15, r * 0.28, dist);
+                float core = exp(-(dist * dist) / max(1.25 * r * r, 1e-6));
+                float lip = smoothstep(r * 1.35, r * 0.80, dist) * (1.0 - smoothstep(r * 0.70, r * 0.25, dist));
+                brush = clamp(max(brush * 0.82, core * 0.90) + lip * 0.10, 0.0, 1.0);
                 // Carve down (more negative wins) — persistent, never damped
                 float carved = -uDepth * brush;
                 outH = min(prev, carved);
@@ -232,22 +264,9 @@
             float ampFactor = 1.0 - smoothstep(0.0, 0.08, abs(val)) * 0.01;
             val *= uDamping * ampFactor;
 
-            // Soft energy locked to persistent groove rim (hugs stroke, no screen-wide clutter)
-            float dentH = decode(texture2D(uDent, vUv).r);
-            float dL = decode(texture2D(uDent, vUv + vec2(-texel.x * 1.5, 0.0)).r);
-            float dR = decode(texture2D(uDent, vUv + vec2( texel.x * 1.5, 0.0)).r);
-            float dD = decode(texture2D(uDent, vUv + vec2(0.0, -texel.y * 1.5)).r);
-            float dU = decode(texture2D(uDent, vUv + vec2(0.0,  texel.y * 1.5)).r);
-            float dentEdge = length(vec2(dR - dL, dU - dD)) * 0.5;
-            float groove = clamp(-dentH * 8.0, 0.0, 1.0);
-            float rimBand = smoothstep(0.02, 0.12, dentEdge) * smoothstep(0.05, 0.55, groove)
-                          * (1.0 - smoothstep(0.85, 1.0, groove));
-            if (rimBand > 0.001) {
-                float phase = uTime * 6.5 + groove * 40.0 + vUv.x * 36.0;
-                val += sin(phase) * rimBand * 0.018 * clamp(uIntensity, 0.4, 2.2);
-            }
-
-            // Moving tip: tight annulus hugging WAVE radius (not huge expanding rings)
+            // No perpetual rim pumping — static dents must settle still after drawing.
+            // Tip injects readable rings; ring size from 波纹/笔刷 slider with a floor
+            // (NOT stroke depth). Soft inject even on tiny moves / taps.
             if (uIndex.z > 0.5) {
                 vec2 currUV = vec2(uIndex.x, 1.0 - uIndex.y);
                 vec2 prevUV = (uPrevIndex.z > 0.5)
@@ -256,15 +275,13 @@
                 float move = length((currUV - prevUV) * aspect);
                 vec2 dTip = (vUv - currUV) * aspect;
                 float dist = length(dTip);
-                float brushR = 0.022 * uRadius; // WAVE slider footprint
-                float ringInner = brushR * 0.78;
-                float ringOuter = brushR * 1.55;
-                float ring = smoothstep(ringInner, ringInner + brushR * 0.2, dist)
-                           * (1.0 - smoothstep(ringOuter - brushR * 0.2, ringOuter, dist));
-                float force = 0.22 + clamp(move * 28.0, 0.0, 0.75);
-                if (move > 0.0025) {
-                    val += ring * force * uIntensity * 0.16;
-                }
+                float waveR = max(0.028, 0.032 * uRadius);
+                float ringInner = waveR * 0.55;
+                float ringOuter = waveR * 1.65;
+                float ring = smoothstep(ringInner, ringInner + waveR * 0.22, dist)
+                           * (1.0 - smoothstep(ringOuter - waveR * 0.22, ringOuter, dist));
+                float force = 0.14 + clamp(move * 26.0, 0.0, 0.85);
+                val += ring * force * clamp(uIntensity, 0.2, 2.5) * 0.20;
             }
 
             gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 0.0, 1.0);
@@ -279,11 +296,12 @@
         uniform sampler2D uDent;
         uniform vec2 uResolution;
         uniform vec2 uVideoScale;
-        uniform float uMode;      // 0 liquid look, 1 crystal wipe look
+        uniform float uMode;      // 0 liquid look, 1 crystal wipe look (UI removed; keep liquid)
         uniform float uMask;      // 0 none, 1 mist, 2 ice, 3 beads
         uniform float uTime;
         uniform float uIntensity;
         uniform float uMirror;
+        uniform float uBlur;      // refraction blur strength from 模糊程度
         varying vec2 vUv;
 
         float decode(float e) { return (e - 0.5) * 5.0; }
@@ -424,92 +442,99 @@
             float activeMask = clamp(grooveMask + waveMask, 0.0, 1.0);
             // Wipe through overlay = carved stroke (persistent)
             float wipe = smoothstep(0.04, 0.72, grooveMask);
+            // Interior of wipe must stay sharp clear photo; only edges/waves distort
+            float wipeCore = smoothstep(0.08, 0.85, grooveMask);
+            float clearFade = 1.0 - wipeCore * 0.92;
+            float edgeWipe = smoothstep(0.02, 0.18, grooveMask) * (1.0 - smoothstep(0.55, 0.95, grooveMask));
+            float distortAmt = clamp(waveMask * 0.95 + edgeWipe * 0.85 + (1.0 - wipeCore) * activeMask * 0.25, 0.0, 1.0) * clearFade;
 
             vec3 viewDir   = vec3(0.0, 0.0, 1.0);
             vec3 mainLight = normalize(vec3(0.4, 0.7, 1.0));
             float lap = (cl + cr + tc + bc) * 0.25 - data;
 
-            float refractStr = 0.48 * uIntensity;
-            vec2 refractOffset = grad * refractStr * aspect * activeMask;
-            float lensStr = 0.14 * uIntensity;
+            float refractStr = 0.42 * uIntensity * clearFade;
+            vec2 refractOffset = grad * refractStr * aspect * distortAmt;
+            float lensStr = 0.12 * uIntensity * clearFade;
             vec2 gradDir  = grad / max(gradLen, 0.001);
-            vec2 lensOffset = gradDir * lap * lensStr * aspect * activeMask;
+            vec2 lensOffset = gradDir * lap * lensStr * aspect * distortAmt;
             vec2 totalOffset = refractOffset + lensOffset;
 
-            float dispersion = clamp(gradLen * 0.12, 0.0, 0.08) * activeMask;
+            float dispersion = clamp(gradLen * 0.10, 0.0, 0.06) * distortAmt;
             vec2 rOff = totalOffset * (1.0 + dispersion);
             vec2 bOff = totalOffset * (1.0 - dispersion);
-            float blur = gradLen * 0.55 * activeMask;
+            float blur = gradLen * 0.50 * max(uBlur, 0.0) * distortAmt;
 
+            vec3 clearBase = sampleCam(camUv, vec2(0.0)).rgb;
             vec3 wet = vec3(0.0);
-            if (activeMask < 0.08) {
-                wet = sampleCam(camUv, vec2(0.0)).rgb;
+            if (distortAmt < 0.06) {
+                wet = clearBase;
             } else {
                 wet.r = (sampleCam(camUv, rOff).r + sampleCam(camUv, rOff + texel * blur).r + sampleCam(camUv, rOff - texel * blur).r) / 3.0;
                 wet.g = (sampleCam(camUv, totalOffset).g + sampleCam(camUv, totalOffset + texel * blur).g + sampleCam(camUv, totalOffset - texel * blur).g) / 3.0;
                 wet.b = (sampleCam(camUv, bOff).b + sampleCam(camUv, bOff + texel * blur).b + sampleCam(camUv, bOff - texel * blur).b) / 3.0;
             }
+            // Pull wipe interior hard toward unperturbed photo (no muddy sludge)
+            wet = mix(wet, clearBase, wipeCore * 0.90);
 
-            float depthDrive = dentOnly * 2.9 + waveOnly * 1.15;
-            float brightness = 1.0 + clamp(depthDrive, -0.52, 0.38);
-            wet *= mix(1.0, brightness, clamp(grooveMask + waveMask * 0.7, 0.0, 1.0));
-            wet = mix(wet, wet * vec3(0.58, 0.80, 1.14), grooveMask * 0.68);
-            float grooveEdge = smoothstep(0.08, 0.55, grooveMask) * (1.0 - smoothstep(0.7, 0.98, grooveMask));
-            wet += vec3(0.55, 0.75, 0.95) * grooveEdge * abs(waveOnly) * 0.55;
+            // Wave brightness only — do NOT darken / blue-tint the carved core
+            float depthDrive = waveOnly * 0.85;
+            float brightness = 1.0 + clamp(depthDrive, -0.18, 0.22);
+            wet *= mix(1.0, brightness, waveMask * clearFade);
+            float grooveEdge = edgeWipe;
+            wet += vec3(0.55, 0.75, 0.95) * grooveEdge * abs(waveOnly) * 0.40;
             float valleyMask = clamp(-waveOnly * 8.0, 0.0, 1.0);
-            wet = mix(wet, wet * vec3(0.78, 0.90, 1.06), valleyMask * 0.35 * waveMask);
+            wet = mix(wet, wet * vec3(0.88, 0.94, 1.04), valleyMask * 0.22 * waveMask * clearFade);
             float crestMask = clamp(waveOnly * 10.0, 0.0, 1.0);
-            wet = mix(wet, wet * vec3(1.05, 1.02, 0.95), crestMask * 0.28 * waveMask);
+            wet = mix(wet, wet * vec3(1.04, 1.02, 0.97), crestMask * 0.18 * waveMask * clearFade);
 
-            float zN = 0.85 / (uIntensity + 0.01);
-            zN *= mix(1.0, 0.62, grooveMask);
-            vec3 normal  = normalize(vec3(-grad.x, -grad.y, zN));
+            float zN = 0.95 / (uIntensity + 0.01);
+            zN *= mix(1.0, 0.85, edgeWipe);
+            vec3 normal  = normalize(vec3(-grad.x * clearFade, -grad.y * clearFade, zN));
             float cosTheta = max(dot(normal, viewDir), 0.0);
             float fresnel  = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
-            fresnel = mix(fresnel, min(fresnel * 1.45, 1.0), grooveMask);
-            vec2 reflUV  = totalOffset * -1.4 * aspect;
+            fresnel = mix(fresnel, min(fresnel * 1.2, 1.0), edgeWipe);
+            vec2 reflUV  = totalOffset * -1.2 * aspect;
             vec3 reflection = sampleCam(camUv, reflUV).rgb;
-            reflection = mix(reflection, reflection * vec3(0.88, 0.94, 1.0), 0.28);
-            wet = mix(wet, reflection, fresnel * clamp(uIntensity * 0.45, 0.0, 0.7) * activeMask);
+            reflection = mix(reflection, reflection * vec3(0.92, 0.96, 1.0), 0.2);
+            wet = mix(wet, reflection, fresnel * clamp(uIntensity * 0.35, 0.0, 0.5) * distortAmt);
 
             vec3 halfVec    = normalize(mainLight + viewDir);
             float NdotH     = max(dot(normal, halfVec), 0.0);
-            float specSharp = pow(NdotH, 200.0) * 2.4 * activeMask;
-            float specBroad = pow(NdotH, 32.0)  * 0.28 * activeMask;
-            float rim = pow(1.0 - cosTheta, 3.0) * grooveMask * 0.65;
+            float edgeSpec  = clamp(edgeWipe + waveMask, 0.0, 1.0) * clearFade;
+            float specSharp = pow(NdotH, 200.0) * 1.8 * edgeSpec;
+            float specBroad = pow(NdotH, 32.0)  * 0.20 * edgeSpec;
+            float rim = pow(1.0 - cosTheta, 3.0) * edgeWipe * 0.45;
             wet += vec3(specSharp + specBroad + rim) * uIntensity;
-            float causticMask = grooveMask * smoothstep(0.01, 0.06, abs(lap)) * 0.5
-                              + waveMask * smoothstep(0.02, 0.08, abs(waveOnly)) * 0.35;
-            wet += vec3(0.95, 0.98, 1.0) * causticMask * uIntensity * 0.28;
-            wet *= mix(vec3(0.97, 0.985, 1.0), vec3(1.0), clamp(activeMask * 4.0, 0.0, 1.0));
+            float causticMask = edgeWipe * smoothstep(0.01, 0.06, abs(lap)) * 0.35
+                              + waveMask * smoothstep(0.02, 0.08, abs(waveOnly)) * 0.40;
+            wet += vec3(0.95, 0.98, 1.0) * causticMask * uIntensity * 0.22 * clearFade;
 
-            // Crystal wipe style variant
+            // Crystal branch kept but UI defaults to liquid (mode=0)
             if (isCrystal > 0.5) {
                 float steps = 18.0;
                 vec2 facetGrad = floor(grad * steps) / steps;
-                vec2 offset    = facetGrad * 0.32 * uIntensity * aspect;
-                wet = sampleCam(camUv, offset).rgb;
+                vec2 offset    = facetGrad * 0.22 * uIntensity * aspect * clearFade;
+                wet = mix(sampleCam(camUv, offset).rgb, clearBase, wipeCore * 0.85);
                 float edgeH = length(facetGrad);
-                wet += vec3(0.75, 0.90, 1.0) * clamp(edgeH, 0.0, 1.0) * gradLen * uIntensity * 3.0;
-                wet = mix(wet, wet * vec3(0.85, 0.92, 1.08), grooveMask * 0.4);
-                wet += abs(waveOnly) * grooveEdge * vec3(0.4, 0.6, 0.9) * 0.35;
+                wet += vec3(0.75, 0.90, 1.0) * clamp(edgeH, 0.0, 1.0) * gradLen * uIntensity * 1.6 * clearFade;
+                wet += abs(waveOnly) * grooveEdge * vec3(0.4, 0.6, 0.9) * 0.28;
             }
 
             // Build overlay mask above photo
             vec3 overlay = wet;
-            if (maskMistM > 0.5) overlay = maskMist(wet, camUv, uv, texel, aspect);
-            if (maskIceM  > 0.5) overlay = maskIce(wet, camUv, uv, texel, aspect, grad);
-            if (maskBeadM > 0.5) overlay = maskBeads(wet, camUv, uv, texel, aspect);
+            if (maskMistM > 0.5) overlay = maskMist(clearBase, camUv, uv, texel, aspect);
+            if (maskIceM  > 0.5) overlay = maskIce(clearBase, camUv, uv, texel, aspect, grad);
+            if (maskBeadM > 0.5) overlay = maskBeads(clearBase, camUv, uv, texel, aspect);
 
-            // Living wet rim where mask meets wipe
-            float edgeWipe = smoothstep(0.02, 0.18, grooveMask) * (1.0 - smoothstep(0.55, 0.95, grooveMask));
-            vec3 wetRim = mix(overlay, wet, 0.65) + abs(waveOnly) * vec3(0.35, 0.55, 0.8) * edgeWipe * 0.5;
-            wetRim += vec3(0.5, 0.7, 0.95) * edgeWipe * (0.08 + abs(sin(uTime * 5.5 + grooveMask * 28.0)) * 0.1);
+            // Soft wet rim at mask/wipe boundary; wipe interior stays clearWet
+            vec3 clearWet = mix(wet, clearBase, wipeCore * 0.92);
+            vec3 wetRim = mix(overlay, clearWet, 0.70) + abs(waveOnly) * vec3(0.35, 0.55, 0.8) * edgeWipe * 0.45;
+            wetRim += vec3(0.5, 0.7, 0.95) * edgeWipe * (0.06 + abs(sin(uTime * 5.5 + grooveMask * 28.0)) * 0.08) * clearFade;
 
-            vec3 color = wet;
+            vec3 color = clearWet;
             if (maskNone < 0.5) {
-                color = mix(overlay, wet, wipe);
-                color = mix(color, wetRim, clamp(edgeWipe * 0.85 + waveMask * edgeWipe, 0.0, 0.9));
+                color = mix(overlay, clearWet, wipe);
+                color = mix(color, wetRim, clamp(edgeWipe * 0.85 + waveMask * edgeWipe * 0.6, 0.0, 0.85));
             }
 
             // Keep compiler happy with isLiquid
@@ -534,11 +559,12 @@
         const loadingEl = document.getElementById('loading');
 
         let width, height, simW, simH;
-        let mode = 0;
-        let maskMode = 0; // 0 none, 1 mist, 2 ice, 3 beads
-        let intensity = 1.5;
-        let radiusMult = 1.0;
-        let damping = 0.975;
+        let mode = 0; // liquid only (crystal UI removed)
+        let maskMode = 1; // default 水雾 so wipe-through-clear is obvious
+        let intensity = 1.0; // 波纹强度
+        let radiusMult = 1.0; // 笔刷大小
+        let damping = 0.988; // 波纹衰减 — higher lasts longer after lift
+        let blurAmount = 0.35; // 模糊程度
         let cameraTex, video;
         let bgImageTex = null;
         let bgImageEl = null;
@@ -948,11 +974,12 @@
         }
 
         function strokeParamsFromPressure(pressure) {
-            // pressure 0..1 → size & carve depth. Min clamp so light touch still draws thin.
+            // Pressure affects brush width + carve depth lightly.
+            // Wave ring size comes from radiusMult / physics floor — NOT stroke depth.
             let p = (typeof pressure === 'number' && pressure > 0) ? Math.min(1, Math.max(0.08, pressure)) : 0.55;
-            const rad = radiusMult * (0.28 + p * 1.05);       // WAVE × pressure
-            const inten = intensity * (0.35 + p * 0.95);      // INTENSITY × pressure
-            const depth = Math.min(1.35, 0.42 * inten + 0.2 * p);
+            const rad = radiusMult * (0.40 + p * 0.85);       // 笔刷大小 × 压感
+            const inten = intensity;                          // 波纹强度 independent of dent
+            const depth = Math.min(0.95, 0.22 + p * 0.55);    // light carve; clarity fixed in render
             return { rad, inten, depth, pressure: p };
         }
 
@@ -1076,6 +1103,7 @@
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMask'), maskMode);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uTime'), time * 0.001);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uIntensity'), intensity);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uBlur'), blurAmount);
             // Photos are not mirrored; live front camera still is
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'),
                 (useBgImage ? 0.0 : (mirrorPreview() ? 1.0 : 0.0)));
@@ -1144,7 +1172,7 @@
         }
 
         function beginPointerStroke(e) {
-            if (e.target.closest && e.target.closest('button, input, #controls, #ui-overlay, #top-controls, #mask-overlay')) return;
+            if (e.target.closest && e.target.closest('button, input, #panel, #top-controls')) return;
             if (e.pointerType === 'mouse' && e.button !== 0) return;
             pointerDown = true;
             pointerDrawActive = true;
@@ -1186,18 +1214,10 @@
         canvas.addEventListener('pointercancel', endPointerStroke);
         window.addEventListener('pointerup', endPointerStroke);
 
-        document.querySelectorAll('#ui-overlay .mode-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('#ui-overlay .mode-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                mode = parseFloat(btn.dataset.mode);
-            });
-        });
-
-        document.querySelectorAll('#mask-overlay .mask-btn').forEach(btn => {
+        document.querySelectorAll('#panel .mask-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                document.querySelectorAll('#mask-overlay .mask-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('#panel .mask-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 maskMode = parseFloat(btn.dataset.mask);
             });
@@ -1212,6 +1232,9 @@
         document.getElementById('damping').addEventListener('input', (e) => {
             damping = parseFloat(e.target.value);
         });
+        document.getElementById('blur').addEventListener('input', (e) => {
+            blurAmount = parseFloat(e.target.value);
+        });
 
         document.getElementById('btn-undo').addEventListener('click', (e) => {
             e.stopPropagation();
@@ -1223,13 +1246,13 @@
             performClear();
         });
 
-        const uiElements = [document.getElementById('controls'), document.getElementById('ui-overlay'), document.getElementById('mask-overlay'), document.getElementById('top-controls'), document.getElementById('hint-cn')];
+        const uiElements = [document.getElementById('panel'), document.getElementById('top-controls'), document.getElementById('hint-cn')];
         const showHint = document.getElementById('show-hint');
         let uiHidden = false;
 
         document.getElementById('btn-hide').addEventListener('click', (e) => {
             e.stopPropagation();
-            uiElements.forEach(el => el.style.display = 'none');
+            uiElements.forEach(el => { if (el) el.style.display = 'none'; });
             showHint.style.display = 'block';
             uiHidden = true;
             setTimeout(() => {
