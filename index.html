@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
+    <!-- build: expand-rings-v2 2026-11-04 -->
     <style>
         * {
             margin: 0;
@@ -172,7 +173,7 @@
         </div>
         <div class="slider-row">
             <label for="damping">波纹衰减</label>
-            <input type="range" id="damping" min="0.92" max="0.998" step="0.001" value="0.988">
+            <input type="range" id="damping" min="0.92" max="0.998" step="0.001" value="0.990">
         </div>
     </div>
 
@@ -258,30 +259,42 @@
             float p22 = decode(texture2D(sampleCurr, vUv + vec2( texel.x,  texel.y)).r);
             float prev = decode(texture2D(samplePrev, vUv).r);
 
+            // Classic height-field wave: laplacian spreads disturbances outward
             float avg = (p10 + p12 + p01 + p21) * 0.2 + (p00 + p20 + p02 + p22) * 0.05;
             float val = avg * 2.0 - prev;
 
-            float ampFactor = 1.0 - smoothstep(0.0, 0.08, abs(val)) * 0.01;
+            // Soft surface-tension damping (original feel) — small ripples die first;
+            // large crests keep traveling ~0.5–2s then settle after lift.
+            float ampFactor = 1.0 - smoothstep(0.0, 0.08, abs(val)) * 0.006;
             val *= uDamping * ampFactor;
 
-            // No perpetual rim pumping — static dents must settle still after drawing.
-            // Tip injects readable rings; ring size from 波纹/笔刷 slider with a floor
-            // (NOT stroke depth). Soft inject even on tiny moves / taps.
+            // Tip: soft Gaussian / capsule impulse (NOT a thin glued ring).
+            // Wave size from 笔刷 slider with floor — NOT stroke depth / pressure.
+            // Wave equation then radiates circular rings outward across the surface.
             if (uIndex.z > 0.5) {
                 vec2 currUV = vec2(uIndex.x, 1.0 - uIndex.y);
                 vec2 prevUV = (uPrevIndex.z > 0.5)
                     ? vec2(uPrevIndex.x, 1.0 - uPrevIndex.y)
                     : currUV;
-                float move = length((currUV - prevUV) * aspect);
-                vec2 dTip = (vUv - currUV) * aspect;
-                float dist = length(dTip);
-                float waveR = max(0.028, 0.032 * uRadius);
-                float ringInner = waveR * 0.55;
-                float ringOuter = waveR * 1.65;
-                float ring = smoothstep(ringInner, ringInner + waveR * 0.22, dist)
-                           * (1.0 - smoothstep(ringOuter - waveR * 0.22, ringOuter, dist));
-                float force = 0.14 + clamp(move * 26.0, 0.0, 0.85);
-                val += ring * force * clamp(uIntensity, 0.2, 2.5) * 0.20;
+
+                // Capsule SDF along the stroke segment (finger through water)
+                vec2 pa = (vUv - prevUV) * aspect;
+                vec2 ba = (currUV - prevUV) * aspect;
+                float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+                float dist = length(pa - ba * h);
+
+                float waveR = max(0.036, 0.040 * uRadius); // expand size floor
+                float vel = length(ba) * uResolution.y;     // pixels of tip travel
+                float force = 0.55 + clamp(vel * 0.012, 0.0, 1.15);
+
+                // Soft blob (center full → falloff) so laplacian births expanding rings
+                float blob = smoothstep(waveR, 0.0, dist);
+                // Light outer crest kick so rings read clearly while still spreading
+                float crest = smoothstep(waveR * 0.55, waveR * 0.95, dist)
+                            * (1.0 - smoothstep(waveR * 1.05, waveR * 1.55, dist));
+
+                float impulse = blob * 1.0 + crest * 0.45;
+                val += clamp(impulse * force, 0.0, 2.2) * clamp(uIntensity, 0.2, 2.5) * 0.55;
             }
 
             gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 0.0, 1.0);
@@ -566,7 +579,7 @@
         let maskMode = 1; // default 水雾 so wipe-through-clear is obvious
         let intensity = 1.0; // 波纹强度
         let radiusMult = 1.0; // 笔刷大小
-        let damping = 0.988; // 波纹衰减 — higher lasts longer after lift
+        let damping = 0.990; // 波纹衰减 — higher lasts longer after lift
         let blurAmount = 0.35; // 模糊程度
         let cameraTex, video;
         let bgImageTex = null;
@@ -771,9 +784,12 @@
                     handsInstance = hands;
                     applyHandsOptions();
                     hands.onResults((results) => {
-                        prevIndexTip.x = indexTip.x;
-                        prevIndexTip.y = indexTip.y;
-                        prevIndexTip.active = indexTip.active;
+                        // Stylus/touch owns tip + prev while drawing — do not wipe velocity
+                        if (!pointerDrawActive) {
+                            prevIndexTip.x = indexTip.x;
+                            prevIndexTip.y = indexTip.y;
+                            prevIndexTip.active = indexTip.active;
+                        }
 
                         let bestIndex = null;
                         let rightFist = false;
@@ -1073,12 +1089,10 @@
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uDamping'), damping);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-            // Advance prev index for next wave frame (hand callback also updates; keep in sync)
-            if (!handsInitialized) {
-                prevIndexTip.x = indexTip.x;
-                prevIndexTip.y = indexTip.y;
-                prevIndexTip.active = indexTip.active;
-            }
+            // Frame-to-frame tip history so capsule SDF + velocity stay healthy
+            prevIndexTip.x = indexTip.x;
+            prevIndexTip.y = indexTip.y;
+            prevIndexTip.active = indexTip.active;
 
             swapWave();
 
@@ -1183,7 +1197,8 @@
             try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
             const p = pointerPos(e);
             lastPtr = { x: p.x, y: p.y, t: performance.now() };
-            prevIndexTip.x = indexTip.x; prevIndexTip.y = indexTip.y; prevIndexTip.active = indexTip.active;
+            // Co-locate prev/curr for a clean radial splash on contact
+            prevIndexTip.x = p.x; prevIndexTip.y = p.y; prevIndexTip.active = 1;
             indexTip.x = p.x; indexTip.y = p.y; indexTip.active = 1;
             onIndexDraw(p.x, p.y, readPressure(e, p));
             e.preventDefault();
@@ -1194,7 +1209,6 @@
             const p = pointerPos(e);
             const pr = readPressure(e, p);
             lastPtr = { x: p.x, y: p.y, t: performance.now() };
-            prevIndexTip.x = indexTip.x; prevIndexTip.y = indexTip.y; prevIndexTip.active = indexTip.active;
             indexTip.x = p.x; indexTip.y = p.y; indexTip.active = 1;
             onIndexDraw(p.x, p.y, pr);
             e.preventDefault();
