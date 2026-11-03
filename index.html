@@ -1152,24 +1152,26 @@
         }
 
         function isIndexExtended(hand) {
-            const tip = hand[8], pip = hand[6], mcp = hand[5], wrist = hand[0];
-            // Require landmarks in frame
-            if (!tip || tip.x < 0.02 || tip.x > 0.98 || tip.y < 0.02 || tip.y > 0.98) return false;
+            const tip = hand[8], dip = hand[7], pip = hand[6], mcp = hand[5], wrist = hand[0];
+            if (!tip || tip.x < 0.01 || tip.x > 0.99 || tip.y < 0.01 || tip.y > 0.99) return false;
             const dTip = dist3(tip, mcp);
             const dPip = dist3(pip, mcp);
-            if (dTip < 0.05) return false; // tip too close to MCP = not clearly present/extended
-            if (dTip <= dPip * 1.28) return false;
-            // Tip should be further from wrist than PIP (clearly sticking out)
-            if (dist3(tip, wrist) <= dist3(pip, wrist) * 1.08) return false;
-            // Other fingers mostly curled helps "pointing" accuracy
-            const midTip = hand[12], ringTip = hand[16], pinkyTip = hand[20];
-            const palm = hand[9];
-            let othersCurled = 0;
-            if (dist3(midTip, palm) < 0.14) othersCurled++;
-            if (dist3(ringTip, palm) < 0.14) othersCurled++;
-            if (dist3(pinkyTip, palm) < 0.14) othersCurled++;
-            if (othersCurled < 1) return false;
+            if (dTip < 0.035) return false;
+            // Softer: allow natural writing pose (not only rigid "pointing")
+            if (dTip <= dPip * 1.08) return false;
+            if (dist3(tip, wrist) <= dist3(pip, wrist) * 1.02) return false;
+            // Prefer tip beyond DIP along finger chain (writing / pointing)
+            if (dip && dist3(tip, mcp) < dist3(dip, mcp) * 0.98) return false;
             return true;
+        }
+
+        function indexExtendScore(hand) {
+            const tip = hand[8], pip = hand[6], mcp = hand[5], wrist = hand[0];
+            if (!tip || !mcp) return -1;
+            const dTip = dist3(tip, mcp);
+            const dPip = Math.max(dist3(pip, mcp), 1e-5);
+            const reach = dist3(tip, wrist) / Math.max(dist3(pip, wrist), 1e-5);
+            return dTip / dPip + reach;
         }
 
         function isFist(hand) {
@@ -1184,21 +1186,40 @@
         }
 
         // selfieMode mirrors landmarks to match mirrored front camera (uMirror).
-        // Do NOT also flip X here — that double-mirrors the tip off the finger.
+        // Inverse of shader camUv = (uv - 0.5) * uVideoScale + 0.5  (cover crop).
+        // Do NOT also flip X — that double-mirrors the tip off the finger.
         function mapLandmarkToScreen(lm) {
-            let screenX = (lm.x - 0.5) / currentVideoScale[0] + 0.5;
-            let screenY = (lm.y - 0.5) / currentVideoScale[1] + 0.5;
-            return { x: screenX, y: screenY };
+            const sx = Math.max(currentVideoScale[0], 1e-5);
+            const sy = Math.max(currentVideoScale[1], 1e-5);
+            let screenX = (lm.x - 0.5) / sx + 0.5;
+            let screenY = (lm.y - 0.5) / sy + 0.5;
+            return {
+                x: Math.min(1.02, Math.max(-0.02, screenX)),
+                y: Math.min(1.02, Math.max(-0.02, screenY))
+            };
+        }
+
+        // Blend tip (8) with DIP (7) — stabler writing point, still follows fingertip
+        function tipFromHand(hand) {
+            const tip = hand[8];
+            const dip = hand[7];
+            if (!tip) return null;
+            const lm = dip
+                ? { x: tip.x * 0.82 + dip.x * 0.18, y: tip.y * 0.82 + dip.y * 0.18, z: tip.z }
+                : tip;
+            return mapLandmarkToScreen(lm);
         }
 
         let currentFacingMode = 'user';
         let videoStream = null;
         let handsInstance = null;
-        let tipSmooth = { x: 0.5, y: 0.5, init: false };
-        let jumpCandidate = null;
-        let jumpStable = 0;
-        const TIP_LERP = 0.42;
-        const JUMP_REJECT = 0.12; // screen UV; reject large jumps unless stable
+        let tipSmooth = { x: 0.5, y: 0.5, vx: 0, vy: 0, init: false };
+        let tipLostSince = 0;
+        const TIP_HOLD_MS = 220; // keep stroke alive through brief landmark drops
+        // Adaptive follow: fast motion → almost 1:1; idle → light denoise
+        const TIP_LERP_MIN = 0.38;
+        const TIP_LERP_MAX = 0.92;
+        const JUMP_SNAP = 0.22; // only snap-hold truly wild outliers
 
         function mirrorPreview() {
             return currentFacingMode === 'user';
@@ -1209,8 +1230,8 @@
             handsInstance.setOptions({
                 maxNumHands: 2,
                 modelComplexity: 1,
-                minDetectionConfidence: 0.66,
-                minTrackingConfidence: 0.66,
+                minDetectionConfidence: 0.55,
+                minTrackingConfidence: 0.50,
                 selfieMode: mirrorPreview()
             });
         }
@@ -1219,36 +1240,55 @@
             if (!tipSmooth.init) {
                 tipSmooth.x = raw.x;
                 tipSmooth.y = raw.y;
+                tipSmooth.vx = 0;
+                tipSmooth.vy = 0;
                 tipSmooth.init = true;
-                jumpCandidate = null;
-                jumpStable = 0;
                 return { x: raw.x, y: raw.y };
             }
             const dx = raw.x - tipSmooth.x;
             const dy = raw.y - tipSmooth.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > JUMP_REJECT) {
-                // Need 2–3 stable frames near the new position before accepting
-                if (jumpCandidate && Math.hypot(raw.x - jumpCandidate.x, raw.y - jumpCandidate.y) < 0.04) {
-                    jumpStable++;
-                } else {
-                    jumpCandidate = { x: raw.x, y: raw.y };
-                    jumpStable = 1;
-                }
-                if (jumpStable < 3) {
+
+            // One-frame wild outlier: keep last point (don't freeze for many frames)
+            if (dist > JUMP_SNAP) {
+                const predX = tipSmooth.x + tipSmooth.vx;
+                const predY = tipSmooth.y + tipSmooth.vy;
+                if (Math.hypot(raw.x - predX, raw.y - predY) > JUMP_SNAP * 0.85) {
                     return { x: tipSmooth.x, y: tipSmooth.y };
                 }
-                tipSmooth.x = raw.x;
-                tipSmooth.y = raw.y;
-                jumpCandidate = null;
-                jumpStable = 0;
-                return { x: tipSmooth.x, y: tipSmooth.y };
             }
-            jumpCandidate = null;
-            jumpStable = 0;
-            tipSmooth.x += (raw.x - tipSmooth.x) * TIP_LERP;
-            tipSmooth.y += (raw.y - tipSmooth.y) * TIP_LERP;
+
+            // Speed-adaptive lerp: writing strokes stay glued to the fingertip
+            const lerp = Math.min(TIP_LERP_MAX, TIP_LERP_MIN + dist * 6.5);
+            const nx = tipSmooth.x + dx * lerp;
+            const ny = tipSmooth.y + dy * lerp;
+            tipSmooth.vx = nx - tipSmooth.x;
+            tipSmooth.vy = ny - tipSmooth.y;
+            tipSmooth.x = nx;
+            tipSmooth.y = ny;
             return { x: tipSmooth.x, y: tipSmooth.y };
+        }
+
+        // Fill gaps so dent stroke stays continuous along the finger path
+        function strokeAlongPath(x, y, pressure) {
+            if (!currentStroke || !currentStroke.points.length) {
+                onIndexDraw(x, y, pressure);
+                return;
+            }
+            const last = currentStroke.points[currentStroke.points.length - 1];
+            const dx = x - last.x;
+            const dy = y - last.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const step = 0.012; // denser stamps while writing fast
+            if (dist <= step * 1.35) {
+                onIndexDraw(x, y, pressure);
+                return;
+            }
+            const n = Math.min(12, Math.ceil(dist / step));
+            for (let i = 1; i <= n; i++) {
+                const t = i / n;
+                onIndexDraw(last.x + dx * t, last.y + dy * t, pressure);
+            }
         }
 
         async function initCamera() {
@@ -1280,39 +1320,36 @@
                     handsInstance = hands;
                     applyHandsOptions();
                     hands.onResults((results) => {
-                        // Stylus/touch owns tip + prev while drawing — do not wipe velocity
-                        if (!pointerDrawActive) {
-                            prevIndexTip.x = indexTip.x;
-                            prevIndexTip.y = indexTip.y;
-                            prevIndexTip.active = indexTip.active;
-                        }
+                        // Physics tip history is owned by render(); avoid zeroing velocity here.
 
                         let bestIndex = null;
-                        let rightFist = false;
+                        let bestScore = -1;
+                        let anyFist = false;
 
                         if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                             for (let hi = 0; hi < results.multiHandLandmarks.length; hi++) {
                                 const hand = results.multiHandLandmarks[hi];
-                                const label = (results.multiHandedness && results.multiHandedness[hi])
-                                    ? results.multiHandedness[hi].label
-                                    : '';
-
-                                if (label === 'Right' && isFist(hand)) {
-                                    rightFist = true;
+                                if (isFist(hand)) {
+                                    anyFist = true;
+                                    continue;
                                 }
-
-                                if (isIndexExtended(hand)) {
-                                    const tip = hand[8];
-                                    // Landmark 8 only; must stay in frame
-                                    if (!tip || tip.x < 0.02 || tip.x > 0.98 || tip.y < 0.02 || tip.y > 0.98) continue;
-                                    if (label === 'Right' && isFist(hand)) continue;
-                                    bestIndex = mapLandmarkToScreen(tip);
+                                if (!isIndexExtended(hand)) continue;
+                                const mapped = tipFromHand(hand);
+                                if (!mapped) continue;
+                                // Keep tip on-screen (cover crop may push slightly OOB)
+                                if (mapped.x < -0.05 || mapped.x > 1.05 || mapped.y < -0.05 || mapped.y > 1.05) continue;
+                                const score = indexExtendScore(hand);
+                                if (score > bestScore) {
+                                    bestScore = score;
+                                    bestIndex = mapped;
                                 }
                             }
                         }
 
-                        if (rightFist) {
+                        // Fist = undo only when not mid pointer-draw
+                        if (anyFist && !bestIndex && !pointerDrawActive) {
                             tipSmooth.init = false;
+                            tipLostSince = 0;
                             indexTip.active = 0;
                             endCurrentStroke();
                             tryUndo();
@@ -1327,21 +1364,36 @@
                         // 食指手势关闭时：不把手部 landmark 写成绘制点（触控笔/手指触屏仍可用）
                         if (!fingerGestureEnabled) {
                             tipSmooth.init = false;
-                            if (!pointerDrawActive) {
-                                indexTip.active = 0;
-                                endCurrentStroke();
-                            }
+                            tipLostSince = 0;
+                            indexTip.active = 0;
+                            endCurrentStroke();
                             return;
                         }
 
                         if (bestIndex) {
+                            tipLostSince = 0;
                             const sm = smoothTip(bestIndex);
                             indexTip.x = sm.x;
                             indexTip.y = sm.y;
                             indexTip.active = 1;
-                            onIndexDraw(sm.x, sm.y, 0.55);
+                            // Pressure from tip travel — keeps stroke lively along writing path
+                            const spd = Math.hypot(tipSmooth.vx, tipSmooth.vy);
+                            const pr = Math.max(0.28, Math.min(0.85, 0.62 - spd * 1.8));
+                            strokeAlongPath(sm.x, sm.y, pr);
+                        } else if (indexTip.active && tipSmooth.init) {
+                            // Brief dropout: hold last tip so writing stroke stays continuous
+                            if (!tipLostSince) tipLostSince = performance.now();
+                            if (performance.now() - tipLostSince < TIP_HOLD_MS) {
+                                indexTip.active = 1;
+                            } else {
+                                tipSmooth.init = false;
+                                tipLostSince = 0;
+                                indexTip.active = 0;
+                                endCurrentStroke();
+                            }
                         } else {
                             tipSmooth.init = false;
+                            tipLostSince = 0;
                             indexTip.active = 0;
                             endCurrentStroke();
                         }
@@ -1520,7 +1572,7 @@
             }
             const last = currentStroke.points[currentStroke.points.length - 1];
             const dx = x - last.x, dy = y - last.y;
-            if (dx * dx + dy * dy < 0.00005) return; // skip tiny jitter
+            if (dx * dx + dy * dy < 0.000018) return; // skip tiny jitter, keep writing path dense
             currentStroke.points.push({ x, y });
             // Update stroke footprint if pressure changes mid-stroke
             currentStroke.radius = sp.rad;
@@ -1919,6 +1971,7 @@
             fingerGestureEnabled = !fingerGestureEnabled;
             if (!fingerGestureEnabled) {
                 tipSmooth.init = false;
+                tipLostSince = 0;
                 if (!pointerDrawActive) {
                     indexTip.active = 0;
                     endCurrentStroke();
@@ -2003,29 +2056,40 @@
         const recordBtn = document.getElementById('btn-record');
 
         function pickRecorderMime() {
-            const candidates = [
+            // 优先 MP4；仅在浏览器不支持时才退回 webm，并提示用户
+            const mp4Candidates = [
+                'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+                'video/mp4;codecs=avc1.4D401E,mp4a.40.2',
+                'video/mp4;codecs=avc1.640028,mp4a.40.2',
+                'video/mp4;codecs=avc1.42E01E',
+                'video/mp4;codecs=h264,aac',
+                'video/mp4'
+            ];
+            const webmFallback = [
                 'video/webm;codecs=vp9,opus',
                 'video/webm;codecs=vp8,opus',
                 'video/webm;codecs=vp9',
                 'video/webm;codecs=vp8',
-                'video/webm',
-                'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
-                'video/mp4;codecs=avc1.42E01E',
-                'video/mp4'
+                'video/webm'
             ];
             if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) {
-                return '';
+                return { mime: '', isMp4: false, usedFallback: false };
             }
-            for (const m of candidates) {
+            for (const m of mp4Candidates) {
                 try {
-                    if (MediaRecorder.isTypeSupported(m)) return m;
+                    if (MediaRecorder.isTypeSupported(m)) return { mime: m, isMp4: true, usedFallback: false };
                 } catch (_) {}
             }
-            return '';
+            for (const m of webmFallback) {
+                try {
+                    if (MediaRecorder.isTypeSupported(m)) return { mime: m, isMp4: false, usedFallback: true };
+                } catch (_) {}
+            }
+            return { mime: '', isMp4: false, usedFallback: false };
         }
 
         function recordExtFromMime(mime) {
-            if (!mime) return 'webm';
+            if (!mime) return 'mp4';
             if (mime.indexOf('mp4') !== -1) return 'mp4';
             return 'webm';
         }
@@ -2050,7 +2114,9 @@
         }
 
         function downloadRecording(blob, mime) {
-            const ext = recordExtFromMime(mime || blob.type || '');
+            let ext = recordExtFromMime(mime || blob.type || '');
+            // 尽量落盘为 .mp4；仅明确 webm 时才用 .webm
+            if (ext !== 'webm') ext = 'mp4';
             const stamp = new Date();
             const pad = (n) => String(n).padStart(2, '0');
             const name = `水面交互_${stamp.getFullYear()}${pad(stamp.getMonth()+1)}${pad(stamp.getDate())}_${pad(stamp.getHours())}${pad(stamp.getMinutes())}${pad(stamp.getSeconds())}.${ext}`;
@@ -2091,16 +2157,22 @@
                 showError('当前浏览器不支持画布录屏（需较新 Safari / Chrome）');
                 return;
             }
-            const mime = pickRecorderMime();
+            const picked = pickRecorderMime();
+            const mime = picked.mime || '';
             recordedChunks = [];
             try {
-                // 只捕获 WebGL canvas，界面 DOM 不会进画面
+                // 只捕获 WebGL canvas，界面 DOM 不会进画面；优先 video/mp4
                 recordStream = canvas.captureStream(30);
                 const opts = mime ? { mimeType: mime, videoBitsPerSecond: 8_000_000 } : { videoBitsPerSecond: 8_000_000 };
                 try {
                     mediaRecorder = new MediaRecorder(recordStream, opts);
                 } catch (_) {
-                    mediaRecorder = new MediaRecorder(recordStream);
+                    // 强制再试一次纯 mp4
+                    try {
+                        mediaRecorder = new MediaRecorder(recordStream, { mimeType: 'video/mp4', videoBitsPerSecond: 8_000_000 });
+                    } catch (__) {
+                        mediaRecorder = new MediaRecorder(recordStream);
+                    }
                 }
             } catch (err) {
                 showError('无法开始录屏: ' + (err && err.message ? err.message : err));
@@ -2120,8 +2192,9 @@
             mediaRecorder.onstop = () => {
                 recordingActive = false;
                 syncRecordBtn();
-                const usedMime = (mediaRecorder && mediaRecorder.mimeType) || mime || 'video/webm';
-                const blob = new Blob(recordedChunks, { type: usedMime.split(';')[0] || 'video/webm' });
+                const usedMime = (mediaRecorder && mediaRecorder.mimeType) || mime || 'video/mp4';
+                const container = usedMime.indexOf('mp4') !== -1 ? 'video/mp4' : (usedMime.split(';')[0] || 'video/webm');
+                const blob = new Blob(recordedChunks, { type: container });
                 recordedChunks = [];
                 if (recordStream) {
                     try { recordStream.getTracks().forEach(t => t.stop()); } catch (_) {}
@@ -2134,14 +2207,24 @@
                     return;
                 }
                 downloadRecording(blob, usedMime);
-                showRecToast('录屏已结束，正在保存视频（不含界面）。若未自动下载，请用分享存到「文件」。', 4200);
+                if (container === 'video/mp4') {
+                    showRecToast('录屏已结束，已保存为 MP4（不含界面）。若未自动下载，请用分享存到「文件」。', 4200);
+                } else {
+                    showRecToast('当前浏览器不支持 MP4 录屏，已改用 WebM 保存。可用 Chrome/Safari 再录以得到 MP4。', 5200);
+                    showError('浏览器不支持 video/mp4 录屏，已回退为 WebM');
+                }
             };
 
             try {
                 mediaRecorder.start(1000); // timeslice：部分 Safari 更稳
                 recordingActive = true;
                 syncRecordBtn();
-                showRecToast('正在录屏：点红色「停止录屏」结束并保存（画面不含界面）', 2600);
+                if (picked.usedFallback) {
+                    showRecToast('正在录屏（此浏览器只能 WebM，非 MP4）。点红色「停止录屏」结束保存', 3600);
+                    showError('当前浏览器不支持 MP4 录屏，将保存为 WebM');
+                } else {
+                    showRecToast('正在录屏（MP4）：点红色「停止录屏」结束并保存（画面不含界面）', 2600);
+                }
             } catch (err) {
                 showError('启动录屏失败: ' + (err && err.message ? err.message : err));
                 recordingActive = false;
