@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: brush-edge-color-v1 2026-11-04 -->
+    <!-- build: dent-hardness-color-ui-v2 2026-11-04 -->
     <style>
         * {
             margin: 0;
@@ -40,19 +40,23 @@
             z-index: 10;
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 10px;
             align-items: stretch;
-            background: rgba(0, 0, 0, 0.72);
-            padding: 12px 16px 14px;
+            background: rgba(0, 0, 0, 0.78);
+            padding: 12px 14px 18px;
             border-radius: 18px;
             backdrop-filter: blur(12px);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            width: min(92vw, 380px);
-            max-height: min(48vh, 420px);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            width: min(94vw, 400px);
+            max-height: min(70vh, 620px);
+            overflow-x: hidden;
             overflow-y: auto;
             -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
             box-sizing: border-box;
             pointer-events: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,0.45) transparent;
         }
 
         #panel .mask-row {
@@ -69,7 +73,7 @@
             width: 100%;
             align-items: center;
             gap: 12px;
-            min-height: 28px;
+            min-height: 30px;
             flex-shrink: 0;
         }
 
@@ -147,11 +151,33 @@
             color: #000;
         }
 
+        #panel .section-title {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: rgba(255,255,255,0.55);
+            text-transform: none;
+            margin-top: 2px;
+            flex-shrink: 0;
+        }
+
+        #panel .color-section {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            width: 100%;
+            flex-shrink: 0;
+            padding: 10px 10px 12px;
+            border-radius: 14px;
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.14);
+            box-sizing: border-box;
+        }
 
         #panel .color-row {
             display: flex;
             flex-direction: column;
-            gap: 6px;
+            gap: 8px;
             width: 100%;
             flex-shrink: 0;
         }
@@ -160,31 +186,42 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 8px;
+            gap: 10px;
+            min-height: 40px;
         }
 
-        #panel .color-row .color-head label {
-            font-size: 12px;
-            font-weight: 600;
-            letter-spacing: 0.5px;
-            color: #eee;
+        #panel .color-row .color-head > label {
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            color: #fff;
             white-space: nowrap;
+        }
+
+        #panel .color-tools {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
         }
 
         #panel .color-row input[type=color] {
             -webkit-appearance: none;
             appearance: none;
-            width: 36px;
-            height: 28px;
-            border: 1px solid rgba(255,255,255,0.25);
-            border-radius: 8px;
+            width: 48px;
+            height: 36px;
+            min-width: 48px;
+            min-height: 36px;
+            border: 2px solid rgba(255,255,255,0.55);
+            border-radius: 10px;
             padding: 0;
-            background: transparent;
+            background: #222;
             cursor: pointer;
+            flex-shrink: 0;
         }
 
         #panel .color-row input[type=color]::-webkit-color-swatch-wrapper {
-            padding: 2px;
+            padding: 3px;
         }
 
         #panel .color-row input[type=color]::-webkit-color-swatch {
@@ -192,30 +229,71 @@
             border-radius: 6px;
         }
 
+        #panel .color-row input[type=color]::-moz-color-swatch {
+            border: none;
+            border-radius: 6px;
+        }
+
+        #panel .chip-btn {
+            border: 1px solid rgba(255,255,255,0.35);
+            background: rgba(0,0,0,0.35);
+            color: #fff;
+            border-radius: 999px;
+            padding: 7px 12px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+            line-height: 1;
+        }
+
+        #panel .chip-btn.active {
+            background: #fff;
+            color: #111;
+            border-color: #fff;
+        }
+
+        #panel .chip-btn.rainbow-chip {
+            background: linear-gradient(90deg, #ff0040, #ffcc00, #00ff66, #00aaff, #aa00ff);
+            color: #111;
+            border-color: rgba(255,255,255,0.7);
+            text-shadow: 0 1px 0 rgba(255,255,255,0.35);
+        }
+
+        #panel .chip-btn.rainbow-chip.active {
+            box-shadow: 0 0 0 2px rgba(255,255,255,0.55);
+        }
+
         #panel .swatch-row {
             display: flex;
-            gap: 6px;
+            gap: 8px;
             flex-wrap: wrap;
             align-items: center;
         }
 
         #panel .swatch {
-            width: 26px;
-            height: 26px;
+            width: 32px;
+            height: 32px;
             border-radius: 50%;
-            border: 2px solid rgba(255,255,255,0.25);
+            border: 2px solid rgba(255,255,255,0.35);
             cursor: pointer;
             padding: 0;
             background: #888;
+            flex-shrink: 0;
         }
 
         #panel .swatch.active {
             border-color: #fff;
-            box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+            box-shadow: 0 0 0 2px rgba(255,255,255,0.4);
         }
 
         #panel .swatch.rainbow {
             background: conic-gradient(#ff0040, #ffcc00, #00ff66, #00aaff, #aa00ff, #ff0040);
+        }
+
+        #panel .panel-foot {
+            height: 4px;
+            flex-shrink: 0;
         }
 
         #error-log {
@@ -259,7 +337,7 @@
 
     <div id="loading">初始化中…</div>
     <div id="error-log"></div>
-    <div id="hint-cn">压感笔刷擦开蒙版 · 原版拖动波纹 · 停画后慢慢停下</div>
+    <div id="hint-cn">凹痕边缘硬度 · 笔触/透光颜色 · 原版拖动波纹</div>
 
     <div id="top-controls" style="position: absolute; top: 20px; right: 20px; z-index: 20; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%;">
         <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">撤销</button>
@@ -303,35 +381,45 @@
             <label for="damping">波纹衰减</label>
             <input type="range" id="damping" min="0.92" max="0.998" step="0.001" value="0.990">
         </div>
-        <div class="color-row">
-            <div class="color-head">
-                <label for="brushColor">笔触颜色</label>
-                <input type="color" id="brushColor" value="#4aa3ff">
+        <div class="section-title">颜色（可下滑）</div>
+        <div class="color-section">
+            <div class="color-row">
+                <div class="color-head">
+                    <label for="brushColor">笔触颜色</label>
+                    <div class="color-tools">
+                        <input type="color" id="brushColor" value="#4aa3ff" aria-label="笔触颜色">
+                        <button type="button" class="chip-btn rainbow-chip" id="brush-rainbow-btn" title="彩色">彩色</button>
+                    </div>
+                </div>
+                <div class="swatch-row" id="brush-swatches">
+                    <button type="button" class="swatch" data-color="#ffffff" title="白" style="background:#ffffff;"></button>
+                    <button type="button" class="swatch" data-color="#7ec8ff" title="青" style="background:#7ec8ff;"></button>
+                    <button type="button" class="swatch active" data-color="#4aa3ff" title="蓝" style="background:#4aa3ff;"></button>
+                    <button type="button" class="swatch" data-color="#f0a868" title="琥珀" style="background:#f0a868;"></button>
+                    <button type="button" class="swatch" data-color="#ff6b8a" title="玫红" style="background:#ff6b8a;"></button>
+                    <button type="button" class="swatch" data-color="#a78bfa" title="紫" style="background:#a78bfa;"></button>
+                    <button type="button" class="swatch rainbow" data-color="rainbow" title="彩色"></button>
+                </div>
             </div>
-            <div class="swatch-row" id="brush-swatches">
-                <button type="button" class="swatch" data-color="#ffffff" title="白" style="background:#ffffff;"></button>
-                <button type="button" class="swatch" data-color="#7ec8ff" title="青" style="background:#7ec8ff;"></button>
-                <button type="button" class="swatch active" data-color="#4aa3ff" title="蓝" style="background:#4aa3ff;"></button>
-                <button type="button" class="swatch" data-color="#f0a868" title="琥珀" style="background:#f0a868;"></button>
-                <button type="button" class="swatch" data-color="#ff6b8a" title="玫红" style="background:#ff6b8a;"></button>
-                <button type="button" class="swatch" data-color="#a78bfa" title="紫" style="background:#a78bfa;"></button>
-                <button type="button" class="swatch rainbow" data-color="rainbow" title="彩色"></button>
+            <div class="color-row">
+                <div class="color-head">
+                    <label for="edgeGlow">边缘透光</label>
+                    <div class="color-tools">
+                        <input type="color" id="edgeGlow" value="#c8e8ff" aria-label="边缘透光">
+                        <button type="button" class="chip-btn rainbow-chip" id="edge-rainbow-btn" title="彩色">彩色</button>
+                    </div>
+                </div>
+                <div class="swatch-row" id="edge-swatches">
+                    <button type="button" class="swatch active" data-color="#c8e8ff" title="冰白" style="background:#c8e8ff;"></button>
+                    <button type="button" class="swatch" data-color="#9fdfff" title="青" style="background:#9fdfff;"></button>
+                    <button type="button" class="swatch" data-color="#ffe29a" title="暖金" style="background:#ffe29a;"></button>
+                    <button type="button" class="swatch" data-color="#ff9ec4" title="粉" style="background:#ff9ec4;"></button>
+                    <button type="button" class="swatch" data-color="#b8a0ff" title="紫" style="background:#b8a0ff;"></button>
+                    <button type="button" class="swatch rainbow" data-color="rainbow" title="彩色"></button>
+                </div>
             </div>
         </div>
-        <div class="color-row">
-            <div class="color-head">
-                <label for="edgeGlow">边缘透光</label>
-                <input type="color" id="edgeGlow" value="#c8e8ff">
-            </div>
-            <div class="swatch-row" id="edge-swatches">
-                <button type="button" class="swatch active" data-color="#c8e8ff" title="冰白" style="background:#c8e8ff;"></button>
-                <button type="button" class="swatch" data-color="#9fdfff" title="青" style="background:#9fdfff;"></button>
-                <button type="button" class="swatch" data-color="#ffe29a" title="暖金" style="background:#ffe29a;"></button>
-                <button type="button" class="swatch" data-color="#ff9ec4" title="粉" style="background:#ff9ec4;"></button>
-                <button type="button" class="swatch" data-color="#b8a0ff" title="紫" style="background:#b8a0ff;"></button>
-                <button type="button" class="swatch rainbow" data-color="rainbow" title="彩色"></button>
-            </div>
-        </div>
+        <div class="panel-foot"></div>
     </div>
 
     <canvas id="glCanvas"></canvas>
@@ -375,31 +463,30 @@
                 float r = 0.022 * uRadius;
                 float hard = clamp(uHardness, 0.0, 1.0);
 
-                // Soft: wide outer falloff + soft core (慢慢凹陷, no sharp lip)
-                // Hard: tight edge, more carved rim
-                float outerMul = mix(1.85, 1.05, hard);
-                float innerMul = mix(0.08, 0.42, hard);
+                // 边缘硬度 drives PERSISTENT dent scar rim (not wave ring):
+                // soft = wide gradual sink bowl; hard = sharp carved scar walls.
+                float outerMul = mix(2.55, 1.05, hard); // soft: far soft start
+                float innerMul = mix(0.02, 0.58, hard); // hard: full depth arrives sooner
                 float brush = smoothstep(r * outerMul, r * innerMul, dist);
 
-                // Gaussian core: soft spreads deep sink gradually; hard concentrates
-                float coreSpread = mix(2.40, 0.85, hard);
+                // Soft: broad gaussian bowl; hard: concentrated carve core
+                float coreSpread = mix(3.40, 0.48, hard);
                 float core = exp(-(dist * dist) / max(coreSpread * r * r, 1e-6));
 
-                // Soft: almost no rim lip; hard: subtle ridge at edge
-                float lipOuter = mix(1.55, 1.25, hard);
-                float lipMid   = mix(0.95, 0.78, hard);
-                float lipInner = mix(0.55, 0.28, hard);
+                // Soft: no lip; hard: carved ridge at scar edge
+                float lipOuter = mix(1.70, 1.32, hard);
+                float lipMid   = mix(1.05, 0.90, hard);
+                float lipInner = mix(0.60, 0.30, hard);
                 float lip = smoothstep(r * lipOuter, r * lipMid, dist)
                           * (1.0 - smoothstep(r * lipMid, r * lipInner, dist));
-                float lipAmt = mix(0.0, 0.14, hard);
+                float lipAmt = mix(0.0, 0.28, hard);
 
-                // Soft leans on smooth falloff; hard mixes tighter core
-                float softW = mix(0.95, 0.55, hard);
-                float coreW = mix(0.55, 0.95, hard);
+                float softW = mix(1.00, 0.42, hard);
+                float coreW = mix(0.62, 1.00, hard);
                 brush = clamp(brush * softW + core * coreW + lip * lipAmt, 0.0, 1.0);
 
-                // Soften power curve: soft = gentler bowl (sqrt-ish), hard = steeper walls
-                float shapePow = mix(0.72, 1.35, hard);
+                // Soft flatter bowl; hard steeper scar walls
+                float shapePow = mix(0.48, 1.70, hard);
                 brush = pow(max(brush, 0.0), shapePow);
 
                 float carved = -uDepth * brush;
@@ -660,19 +747,19 @@
             float grooveMask = clamp(-dentOnly * 10.0, 0.0, 1.0);
             float waveMask = smoothstep(0.010, 0.055, abs(waveOnly));
             float activeMask = clamp(grooveMask + waveMask, 0.0, 1.0);
-            // Living wet stroke through overlay (persistent groove + living waves)
-            // Soft hardness = wider wipe ramp (gradual depression); hard = tighter rim
+            // Scar rim softness primarily comes from dent field (uHardness stamped in fs-dent).
+            // Render only lightly assists wipe/glow so soft scars look gradual, hard scars crisp.
             float hard = clamp(uHardness, 0.0, 1.0);
-            float wipeLo = mix(0.015, 0.06, hard);
-            float wipeHi = mix(0.88, 0.62, hard);
+            float wipeLo = mix(0.01, 0.045, hard);
+            float wipeHi = mix(0.92, 0.70, hard);
             float wipe = smoothstep(wipeLo, wipeHi, grooveMask);
-            float edgeLo = mix(0.008, 0.03, hard);
-            float edgeMid = mix(0.28, 0.16, hard);
-            float edgeHiA = mix(0.70, 0.50, hard);
-            float edgeHiB = mix(0.98, 0.90, hard);
+            float edgeLo = mix(0.006, 0.025, hard);
+            float edgeMid = mix(0.32, 0.14, hard);
+            float edgeHiA = mix(0.78, 0.48, hard);
+            float edgeHiB = mix(0.99, 0.88, hard);
             float edgeWipe = smoothstep(edgeLo, edgeMid, grooveMask) * (1.0 - smoothstep(edgeHiA, edgeHiB, grooveMask));
-            // Soft see-through: clear camera shows through wet stroke; keep living motion
-            float seeThru = smoothstep(mix(0.03, 0.08, hard), mix(0.90, 0.72, hard), grooveMask);
+            // Camera see-through inside persistent scar
+            float seeThru = smoothstep(mix(0.02, 0.07, hard), mix(0.94, 0.74, hard), grooveMask);
 
             vec3 viewDir   = vec3(0.0, 0.0, 1.0);
             vec3 mainLight = normalize(vec3(0.4, 0.7, 1.0));
@@ -1515,6 +1602,10 @@
         });
         document.getElementById('hardness').addEventListener('input', (e) => {
             edgeHardness = parseFloat(e.target.value);
+            // Live preview: persistent scar edge hardness (凹痕边缘), restamp all dents
+            for (let i = 0; i < strokes.length; i++) strokes[i].hardness = edgeHardness;
+            if (currentStroke) currentStroke.hardness = edgeHardness;
+            restampAllStrokes();
         });
 
         function hexToRgb01(hex) {
@@ -1538,6 +1629,8 @@
                 const rain = b.dataset.color === 'rainbow';
                 b.classList.toggle('active', isRainbow ? rain : (!rain && b.dataset.color.toLowerCase() === hex.toLowerCase()));
             });
+            const rainBtn = document.getElementById('brush-rainbow-btn');
+            if (rainBtn) rainBtn.classList.toggle('active', !!isRainbow);
         }
         function setEdgeFromHex(hex, isRainbow) {
             edgeRainbow = isRainbow ? 1.0 : 0.0;
@@ -1550,12 +1643,22 @@
                 const rain = b.dataset.color === 'rainbow';
                 b.classList.toggle('active', isRainbow ? rain : (!rain && b.dataset.color.toLowerCase() === hex.toLowerCase()));
             });
+            const rainBtn = document.getElementById('edge-rainbow-btn');
+            if (rainBtn) rainBtn.classList.toggle('active', !!isRainbow);
         }
         document.getElementById('brushColor').addEventListener('input', (e) => {
             setBrushFromHex(e.target.value, false);
         });
         document.getElementById('edgeGlow').addEventListener('input', (e) => {
             setEdgeFromHex(e.target.value, false);
+        });
+        document.getElementById('brush-rainbow-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            setBrushFromHex('#4aa3ff', true);
+        });
+        document.getElementById('edge-rainbow-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            setEdgeFromHex('#c8e8ff', true);
         });
         document.querySelectorAll('#brush-swatches .swatch').forEach(btn => {
             btn.addEventListener('click', (e) => {
