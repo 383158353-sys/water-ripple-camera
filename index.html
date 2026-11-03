@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: edge-hardness-v1 2026-11-04 -->
+    <!-- build: orig-wave-v1 2026-11-04 -->
     <style>
         * {
             margin: 0;
@@ -139,7 +139,7 @@
 
     <div id="loading">初始化中…</div>
     <div id="error-log"></div>
-    <div id="hint-cn">压感笔刷擦开蒙版 · 停画后波纹慢慢停下</div>
+    <div id="hint-cn">压感笔刷擦开蒙版 · 原版拖动波纹 · 停画后慢慢停下</div>
 
     <div id="top-controls" style="position: absolute; top: 20px; right: 20px; z-index: 20; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%;">
         <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">撤销</button>
@@ -159,6 +159,10 @@
             <button class="mode-btn mask-btn" data-mask="2" style="padding:8px 14px; font-size:12px;">冰块</button>
             <button class="mode-btn mask-btn" data-mask="3" style="padding:8px 14px; font-size:12px;">凝露</button>
         </div>
+        <div class="mask-row" id="wave-style-row">
+            <button class="mode-btn wave-btn active" data-wave="1" style="padding:8px 14px; font-size:12px;">原版波纹</button>
+            <button class="mode-btn wave-btn" data-wave="0" style="padding:8px 14px; font-size:12px;">柔和波纹</button>
+        </div>
         <div class="slider-row">
             <label for="radius">笔刷大小</label>
             <input type="range" id="radius" min="0.25" max="3.5" step="0.05" value="1.0">
@@ -173,7 +177,7 @@
         </div>
         <div class="slider-row">
             <label for="intensity">波纹强度</label>
-            <input type="range" id="intensity" min="0.2" max="2.5" step="0.05" value="1.0">
+            <input type="range" id="intensity" min="0.1" max="3.0" step="0.05" value="1.5">
         </div>
         <div class="slider-row">
             <label for="damping">波纹衰减</label>
@@ -269,6 +273,7 @@
         uniform float uIntensity;
         uniform float uRadius;
         uniform float uDamping;
+        uniform float uOrigWave; // 1 = 原版拖动波纹, 0 = 柔和
         varying vec2 vUv;
 
         float decode(float e) { return (e - 0.5) * 5.0; }
@@ -297,9 +302,13 @@
             float ampFactor = 1.0 - smoothstep(0.0, 0.08, abs(val)) * 0.006;
             val *= uDamping * ampFactor;
 
-            // Tip: soft Gaussian / capsule impulse (NOT a thin glued ring).
-            // Wave size from 笔刷 slider with floor — NOT stroke depth / pressure.
-            // Wave equation then radiates circular rings outward across the surface.
+            // Ambient micro-ripple (original Reality Distorter) — only in 原版波纹
+            if (uOrigWave > 0.5) {
+                float noise = fract(sin(dot(vUv + uTime * 0.07, vec2(12.9898, 78.233))) * 43758.5453);
+                val += (noise - 0.5) * 0.0012 * uIntensity;
+            }
+
+            // Tip inject — 原版 = bak capsule splash; 柔和 = gentler blob+crest
             if (uIndex.z > 0.5) {
                 vec2 currUV = vec2(uIndex.x, 1.0 - uIndex.y);
                 vec2 prevUV = (uPrevIndex.z > 0.5)
@@ -311,19 +320,23 @@
                 vec2 ba = (currUV - prevUV) * aspect;
                 float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
                 float dist = length(pa - ba * h);
+                float vel = length(ba) * uResolution.y; // pixels of tip travel
 
-                float waveR = max(0.036, 0.040 * uRadius); // expand size floor
-                float vel = length(ba) * uResolution.y;     // pixels of tip travel
-                float force = 0.55 + clamp(vel * 0.012, 0.0, 1.15);
-
-                // Soft blob (center full → falloff) so laplacian births expanding rings
-                float blob = smoothstep(waveR, 0.0, dist);
-                // Light outer crest kick so rings read clearly while still spreading
-                float crest = smoothstep(waveR * 0.55, waveR * 0.95, dist)
-                            * (1.0 - smoothstep(waveR * 1.05, waveR * 1.55, dist));
-
-                float impulse = blob * 1.0 + crest * 0.45;
-                val += clamp(impulse * force, 0.0, 2.2) * clamp(uIntensity, 0.2, 2.5) * 0.55;
+                if (uOrigWave > 0.5) {
+                    // Exact original bak tip: soft capsule blob, strong drag splash
+                    float baseRadius = 0.038 * uRadius;
+                    float force = 0.6 + clamp(vel * 0.012, 0.0, 1.2);
+                    float interaction = smoothstep(baseRadius, 0.0, dist) * force;
+                    val += clamp(interaction, 0.0, 2.0) * uIntensity * 0.7;
+                } else {
+                    float waveR = max(0.036, 0.040 * uRadius);
+                    float force = 0.55 + clamp(vel * 0.012, 0.0, 1.15);
+                    float blob = smoothstep(waveR, 0.0, dist);
+                    float crest = smoothstep(waveR * 0.55, waveR * 0.95, dist)
+                                * (1.0 - smoothstep(waveR * 1.05, waveR * 1.55, dist));
+                    float impulse = blob * 1.0 + crest * 0.45;
+                    val += clamp(impulse * force, 0.0, 2.2) * clamp(uIntensity, 0.2, 2.5) * 0.55;
+                }
             }
 
             gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 0.0, 1.0);
@@ -345,6 +358,7 @@
         uniform float uMirror;
         uniform float uBlur;      // refraction blur strength from 模糊程度
         uniform float uHardness;  // 边缘硬度 — soft = gentler wipe rim
+        uniform float uOrigWave;  // 1 = 原版流动折射, 0 = 柔和
         varying vec2 vUv;
 
         float decode(float e) { return (e - 0.5) * 5.0; }
@@ -501,20 +515,21 @@
             vec3 mainLight = normalize(vec3(0.4, 0.7, 1.0));
             float lap = (cl + cr + tc + bc) * 0.25 - data;
 
-            // Distortion stays alive: waves strong, soft dent contributes gently
-            float distortAmt = clamp(waveMask * 1.05 + grooveMask * 0.42 + edgeWipe * 0.35, 0.0, 1.0);
-            float refractStr = 0.38 * uIntensity;
+            // Distortion: 原版波纹 uses bak-strength refraction/lens; 柔和 keeps gentler look
+            float waveBoost = mix(1.05, 1.40, uOrigWave);
+            float distortAmt = clamp(waveMask * waveBoost + grooveMask * 0.42 + edgeWipe * 0.35, 0.0, 1.0);
+            float refractStr = mix(0.38, 0.55, uOrigWave) * uIntensity;
             vec2 refractOffset = grad * refractStr * aspect * distortAmt;
-            float lensStr = 0.11 * uIntensity;
+            float lensStr = mix(0.11, 0.18, uOrigWave) * uIntensity;
             vec2 gradDir  = grad / max(gradLen, 0.001);
             vec2 lensOffset = gradDir * lap * lensStr * aspect * distortAmt;
             vec2 totalOffset = refractOffset + lensOffset;
 
-            float dispersion = clamp(gradLen * 0.09, 0.0, 0.055) * distortAmt;
+            float dispersion = clamp(gradLen * mix(0.09, 0.20, uOrigWave), 0.0, mix(0.055, 0.14, uOrigWave)) * distortAmt;
             vec2 rOff = totalOffset * (1.0 + dispersion);
             vec2 bOff = totalOffset * (1.0 - dispersion);
             // Mild blur only — avoid grainy mud inside stroke
-            float blur = gradLen * 0.28 * max(uBlur, 0.0) * distortAmt * mix(1.0, 0.55, seeThru);
+            float blur = gradLen * mix(0.28, 1.0, uOrigWave) * max(uBlur, 0.0) * distortAmt * mix(1.0, 0.55, seeThru);
 
             vec3 clearBase = sampleCam(camUv, vec2(0.0)).rgb;
             vec3 wet = vec3(0.0);
@@ -528,17 +543,17 @@
             // Glassy see-through: more of the photo shows through, refraction still visible
             wet = mix(wet, clearBase, seeThru * 0.38);
 
-            // No heavy darkening / blue sludge — light wave-driven lift only
-            float depthDrive = waveOnly * 0.70 + dentOnly * 0.35;
-            float brightness = 1.0 + clamp(depthDrive, -0.12, 0.20);
-            wet *= mix(1.0, brightness, clamp(waveMask * 0.85 + grooveMask * 0.25, 0.0, 1.0));
+            // Wave depth shading — 原版 closer to bak peak/valley tint
+            float depthDrive = waveOnly * mix(0.70, 2.0, uOrigWave) + dentOnly * mix(0.35, 0.20, uOrigWave);
+            float brightness = 1.0 + clamp(depthDrive, mix(-0.12, -0.35, uOrigWave), mix(0.20, 0.42, uOrigWave));
+            wet *= mix(1.0, brightness, clamp(waveMask * mix(0.85, 1.0, uOrigWave) + grooveMask * 0.25, 0.0, 1.0));
             // Very light cool sheen on edges only (not whole stroke mud tint)
             wet = mix(wet, wet * vec3(0.92, 0.97, 1.05), edgeWipe * 0.18);
-            wet += vec3(0.55, 0.75, 0.95) * edgeWipe * abs(waveOnly) * 0.42;
-            float valleyMask = clamp(-waveOnly * 8.0, 0.0, 1.0);
-            wet = mix(wet, wet * vec3(0.90, 0.95, 1.03), valleyMask * 0.18 * waveMask);
+            wet += vec3(0.55, 0.75, 0.95) * edgeWipe * abs(waveOnly) * mix(0.42, 0.55, uOrigWave);
+            float valleyMask = clamp(-waveOnly * mix(8.0, 12.0, uOrigWave), 0.0, 1.0);
+            wet = mix(wet, wet * vec3(0.90, 0.95, 1.03), valleyMask * mix(0.18, 0.45, uOrigWave) * waveMask);
             float crestMask = clamp(waveOnly * 10.0, 0.0, 1.0);
-            wet = mix(wet, wet * vec3(1.05, 1.02, 0.97), crestMask * 0.20 * waveMask);
+            wet = mix(wet, wet * vec3(1.05, 1.02, 0.97), crestMask * mix(0.20, 0.38, uOrigWave) * waveMask);
 
             // Living normals / fresnel / specular across the stroke (not only edges)
             float zN = 0.90 / (uIntensity + 0.01);
@@ -550,7 +565,7 @@
             vec2 reflUV  = totalOffset * -1.25 * aspect;
             vec3 reflection = sampleCam(camUv, reflUV).rgb;
             reflection = mix(reflection, reflection * vec3(0.92, 0.96, 1.0), 0.18);
-            wet = mix(wet, reflection, fresnel * clamp(uIntensity * 0.38, 0.0, 0.55) * distortAmt);
+            wet = mix(wet, reflection, fresnel * clamp(uIntensity * mix(0.38, 0.50, uOrigWave), 0.0, mix(0.55, 0.75, uOrigWave)) * distortAmt);
 
             vec3 halfVec    = normalize(mainLight + viewDir);
             float NdotH     = max(dot(normal, halfVec), 0.0);
@@ -560,8 +575,8 @@
             float rim = pow(1.0 - cosTheta, 3.0) * (edgeWipe * 0.55 + waveMask * 0.25);
             wet += vec3(specSharp + specBroad + rim) * uIntensity;
             float causticMask = grooveMask * smoothstep(0.01, 0.06, abs(lap)) * 0.28
-                              + waveMask * smoothstep(0.02, 0.08, abs(waveOnly)) * 0.42;
-            wet += vec3(0.95, 0.98, 1.0) * causticMask * uIntensity * 0.24;
+                              + waveMask * smoothstep(0.02, 0.08, abs(waveOnly)) * mix(0.42, 0.70, uOrigWave);
+            wet += vec3(0.95, 0.98, 1.0) * causticMask * uIntensity * mix(0.24, 0.45, uOrigWave);
 
             // Crystal branch kept; UI stays liquid (mode=0)
             if (isCrystal > 0.5) {
@@ -615,11 +630,12 @@
         let width, height, simW, simH;
         let mode = 0; // liquid only (crystal UI removed)
         let maskMode = 1; // default 水雾 so wipe-through-clear is obvious
-        let intensity = 1.0; // 波纹强度
+        let intensity = 1.5; // 波纹强度 — original bak default
         let radiusMult = 1.0; // 笔刷大小
         let damping = 0.990; // 波纹衰减 — higher lasts longer after lift
         let blurAmount = 0.35; // 模糊程度
         let edgeHardness = 0.40; // 边缘硬度 0 soft gradual → 1 hard rim
+        let origWave = 1.0; // 1=原版波纹 (default), 0=柔和
         let cameraTex, video;
         let bgImageTex = null;
         let bgImageEl = null;
@@ -1130,6 +1146,7 @@
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uIntensity'), intensity);
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uRadius'), radiusMult);
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uDamping'), damping);
+            gl.uniform1f(gl.getUniformLocation(programs.physics, 'uOrigWave'), origWave);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
 
             // Frame-to-frame tip history so capsule SDF + velocity stay healthy
@@ -1165,6 +1182,7 @@
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uIntensity'), intensity);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uBlur'), blurAmount);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uHardness'), edgeHardness);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uOrigWave'), origWave);
             // Photos are not mirrored; live front camera still is
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'),
                 (useBgImage ? 0.0 : (mirrorPreview() ? 1.0 : 0.0)));
@@ -1281,6 +1299,15 @@
                 document.querySelectorAll('#panel .mask-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
                 maskMode = parseFloat(btn.dataset.mask);
+            });
+        });
+
+        document.querySelectorAll('#panel .wave-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                document.querySelectorAll('#panel .wave-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                origWave = parseFloat(btn.dataset.wave);
             });
         });
 
