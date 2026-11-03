@@ -157,6 +157,65 @@
             50% { opacity: 0.72; }
         }
 
+        #float-chrome {
+            position: absolute;
+            top: 18px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 40;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+            flex-wrap: wrap;
+            pointer-events: none;
+            max-width: calc(100% - 24px);
+        }
+        #float-chrome .float-btn {
+            pointer-events: auto;
+            border: none;
+            border-radius: 999px;
+            padding: 12px 18px;
+            font-size: 14px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            cursor: pointer;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            white-space: nowrap;
+        }
+        #btn-show-ui {
+            display: none;
+            background: rgba(255,255,255,0.92);
+            color: #111;
+        }
+        #btn-stop-rec {
+            display: none;
+            background: #e53935;
+            color: #fff;
+            animation: rec-pulse 1.2s ease-in-out infinite;
+        }
+        #rec-toast {
+            position: absolute;
+            left: 50%;
+            bottom: 120px;
+            transform: translateX(-50%);
+            z-index: 45;
+            display: none;
+            pointer-events: none;
+            background: rgba(0,0,0,0.78);
+            color: #fff;
+            padding: 12px 18px;
+            border-radius: 14px;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            max-width: min(90vw, 360px);
+            line-height: 1.45;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+        }
+
         .mode-btn.active {
             background: #fff;
             color: #000;
@@ -361,7 +420,11 @@
         <button id="btn-hide" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">隐藏界面</button>
         <input id="bg-file" type="file" accept="image/*" style="display:none;">
     </div>
-    <div id="show-hint" style="position: absolute; top: 40px; left: 50%; transform: translateX(-50%); color: rgba(255,255,255,0.6); font-size: 14px; font-weight: bold; display: none; z-index: 20; pointer-events: none; letter-spacing: 2px; text-shadow: 0 2px 4px rgba(0,0,0,0.8);">点任意处显示界面</div>
+    <div id="float-chrome">
+        <button id="btn-show-ui" class="float-btn" type="button" title="重新显示全部界面">显示界面</button>
+        <button id="btn-stop-rec" class="float-btn" type="button" title="结束录屏并保存视频">停止录屏</button>
+    </div>
+    <div id="rec-toast"></div>
 
     <div id="panel">
         <div class="mask-row">
@@ -1804,8 +1867,42 @@
         });
 
         const uiElements = [document.getElementById('panel'), document.getElementById('top-controls'), document.getElementById('hint-cn')];
-        const showHint = document.getElementById('show-hint');
+        const showUiBtn = document.getElementById('btn-show-ui');
+        const stopRecFloatBtn = document.getElementById('btn-stop-rec');
+        const recToast = document.getElementById('rec-toast');
         let uiHidden = false;
+        let recToastTimer = null;
+        // 提前声明，供 setUiHidden 在录屏逻辑之前安全读取
+        let recordingActive = false;
+
+        function showRecToast(msg, ms) {
+            if (!recToast) return;
+            recToast.textContent = msg;
+            recToast.style.display = 'block';
+            if (recToastTimer) clearTimeout(recToastTimer);
+            recToastTimer = setTimeout(() => {
+                recToast.style.display = 'none';
+            }, ms || 3200);
+        }
+
+        function setUiHidden(hidden) {
+            uiHidden = !!hidden;
+            uiElements.forEach(el => {
+                if (!el) return;
+                if (uiHidden) {
+                    el.style.display = 'none';
+                } else if (el.id === 'hint-cn') {
+                    el.style.display = 'block';
+                } else {
+                    el.style.display = 'flex';
+                }
+            });
+            if (showUiBtn) showUiBtn.style.display = uiHidden ? 'inline-flex' : 'none';
+            // 录屏中即使隐藏界面，浮动停止按钮也一直显示
+            if (stopRecFloatBtn) {
+                stopRecFloatBtn.style.display = recordingActive ? 'inline-flex' : 'none';
+            }
+        }
 
         const fingerBtn = document.getElementById('btn-finger');
         function syncFingerBtn() {
@@ -1831,29 +1928,18 @@
         });
 
         document.getElementById('btn-hide').addEventListener('click', (e) => {
+            e.preventDefault();
             e.stopPropagation();
-            uiElements.forEach(el => { if (el) el.style.display = 'none'; });
-            showHint.style.display = 'block';
-            uiHidden = true;
-            setTimeout(() => {
-                showHint.style.transition = 'opacity 1s ease-out';
-                showHint.style.opacity = '0';
-            }, 2000);
+            setUiHidden(true);
         });
 
-        window.addEventListener('click', () => {
-            if (uiHidden) {
-                uiElements.forEach(el => {
-                    if (!el) return;
-                    if (el.id === 'hint-cn') el.style.display = 'block';
-                    else el.style.display = 'flex';
-                });
-                showHint.style.display = 'none';
-                showHint.style.opacity = '1';
-                showHint.style.transition = 'none';
-                uiHidden = false;
-            }
-        });
+        if (showUiBtn) {
+            showUiBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setUiHidden(false);
+            });
+        }
 
         function ensureBgTexture() {
             if (!bgImageTex) {
@@ -1913,7 +1999,6 @@
         // —— 录屏：只录 WebGL 画布，不含 UI ——
         let mediaRecorder = null;
         let recordedChunks = [];
-        let recordingActive = false;
         let recordStream = null;
         const recordBtn = document.getElementById('btn-record');
 
@@ -1946,16 +2031,21 @@
         }
 
         function syncRecordBtn() {
-            if (!recordBtn) return;
-            recordBtn.classList.toggle('recording', recordingActive);
-            recordBtn.classList.toggle('active', recordingActive);
-            recordBtn.textContent = recordingActive ? '停止录屏' : '录屏';
-            if (!recordingActive) {
-                recordBtn.style.background = 'rgba(0,0,0,0.6)';
-                recordBtn.style.color = '#fff';
-            } else {
-                recordBtn.style.background = '#e53935';
-                recordBtn.style.color = '#fff';
+            if (recordBtn) {
+                recordBtn.classList.toggle('recording', recordingActive);
+                recordBtn.classList.toggle('active', recordingActive);
+                recordBtn.textContent = recordingActive ? '停止录屏' : '录屏';
+                if (!recordingActive) {
+                    recordBtn.style.background = 'rgba(0,0,0,0.6)';
+                    recordBtn.style.color = '#fff';
+                } else {
+                    recordBtn.style.background = '#e53935';
+                    recordBtn.style.color = '#fff';
+                }
+            }
+            // 录屏中始终显示浮动「停止录屏」（隐藏界面时也能点）
+            if (stopRecFloatBtn) {
+                stopRecFloatBtn.style.display = recordingActive ? 'inline-flex' : 'none';
             }
         }
 
@@ -2040,15 +2130,18 @@
                 mediaRecorder = null;
                 if (!blob.size) {
                     showError('录屏为空，请再试一次');
+                    showRecToast('录屏失败：没有画面数据', 2800);
                     return;
                 }
                 downloadRecording(blob, usedMime);
+                showRecToast('录屏已结束，正在保存视频（不含界面）。若未自动下载，请用分享存到「文件」。', 4200);
             };
 
             try {
                 mediaRecorder.start(1000); // timeslice：部分 Safari 更稳
                 recordingActive = true;
                 syncRecordBtn();
+                showRecToast('正在录屏：点红色「停止录屏」结束并保存（画面不含界面）', 2600);
             } catch (err) {
                 showError('启动录屏失败: ' + (err && err.message ? err.message : err));
                 recordingActive = false;
@@ -2072,6 +2165,13 @@
                 e.preventDefault();
                 e.stopPropagation();
                 toggleCanvasRecording();
+            });
+        }
+        if (stopRecFloatBtn) {
+            stopRecFloatBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (recordingActive) stopCanvasRecording();
             });
         }
 
