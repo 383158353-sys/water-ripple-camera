@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Reality Distorter - GPU Physics</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        body {
+            background-color: #000;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+        }
+
+        #ui-overlay {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.4);
+            padding: 10px;
+            border-radius: 50px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .mode-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            white-space: nowrap;
+        }
+
+        .mode-btn.active {
+            background: #fff;
+            color: #000;
+        }
+
+        #error-log {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #ff4444;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            display: none;
+            pointer-events: none;
+            z-index: 100;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+
+        #hint-cn {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 15;
+            font-size: 11px;
+            color: rgba(255,255,255,0.55);
+            letter-spacing: 0.5px;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+
+    <div id="loading">Initializing Reality...</div>
+    <div id="error-log"></div>
+    <div id="hint-cn">食指擦出清晰笔迹 · 右手握拳撤销</div>
+
+    <div id="top-controls" style="position: absolute; top: 20px; right: 20px; z-index: 20; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%;">
+        <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">UNDO</button>
+        <button id="btn-clear" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">CLEAR</button>
+        <button id="btn-camera" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">SWITCH CAM</button>
+        <button id="btn-hide" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">HIDE UI</button>
+    </div>
+    <div id="show-hint" style="position: absolute; top: 40px; left: 50%; transform: translateX(-50%); color: rgba(255,255,255,0.6); font-size: 14px; font-weight: bold; display: none; z-index: 20; pointer-events: none; letter-spacing: 2px; text-shadow: 0 2px 4px rgba(0,0,0,0.8);">TAP ANYWHERE TO SHOW UI</div>
+
+    <div id="controls" style="position: absolute; bottom: 90px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; flex-direction: column; align-items: center; gap: 12px; background: rgba(0,0,0,0.6); padding: 15px 25px; border-radius: 20px; backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); width: 85%; max-width: 320px;">
+        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+            <label for="intensity" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">INTENSITY</label>
+            <input type="range" id="intensity" min="0.1" max="3.0" step="0.1" value="1.5" style="width: 65%; accent-color: #fff;">
+        </div>
+        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+            <label for="radius" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">BRUSH</label>
+            <input type="range" id="radius" min="0.2" max="4.0" step="0.1" value="1.0" style="width: 65%; accent-color: #fff;">
+        </div>
+        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+            <label for="damping" style="font-size: 11px; font-weight: bold; letter-spacing: 1px; color: #ddd;">DECAY</label>
+            <input type="range" id="damping" min="0.85" max="0.995" step="0.005" value="0.94" style="width: 65%; accent-color: #fff;">
+        </div>
+    </div>
+    <div id="ui-overlay">
+        <button class="mode-btn active" data-mode="0">LIQUID</button>
+        <button class="mode-btn" data-mode="1">CRYSTAL</button>
+    </div>
+
+    <canvas id="glCanvas"></canvas>
+
+    <!-- Vertex Shader -->
+    <script id="vs" type="x-shader/x-vertex">
+        attribute vec2 position;
+        varying vec2 vUv;
+        void main() {
+            vUv = position * 0.5 + 0.5;
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    </script>
+
+    <!-- Clear-mask stamp: persistent wipe through frost (0=frost, 1=clear). -->
+    <script id="fs-dent" type="x-shader/x-fragment">
+        precision highp float;
+        uniform sampler2D uPrevDent;
+        uniform vec2 uResolution;
+        uniform vec2 uBrushA;
+        uniform vec2 uBrushB;
+        uniform float uRadius;
+        uniform float uDepth;
+        uniform float uStamp;
+        varying vec2 vUv;
+
+        void main() {
+            float prev = texture2D(uPrevDent, vUv).r;
+            float outC = prev;
+            if (uStamp > 0.5) {
+                vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+                vec2 pa = (vUv - uBrushA) * aspect;
+                vec2 ba = (uBrushB - uBrushA) * aspect;
+                float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+                float dist = length(pa - ba * h);
+                // Constant-width clear brush (flowing pen trail)
+                float r = 0.025 * uRadius;
+                float brush = smoothstep(r, r * 0.32, dist);
+                float core = exp(-(dist * dist) / max(1.05 * r * r, 1e-6));
+                brush = clamp(max(brush * 0.9, core), 0.0, 1.0);
+                // Persist clearness (more clear wins)
+                outC = max(prev, brush * clamp(uDepth, 0.0, 1.0));
+            }
+            gl_FragColor = vec4(clamp(outC, 0.0, 1.0), 0.0, 0.0, 1.0);
+        }
+    </script>
+
+    <!-- Wave physics ping-pong (transient ripples only) -->
+    <script id="fs-physics" type="x-shader/x-fragment">
+        precision highp float;
+        uniform sampler2D samplePrev;
+        uniform sampler2D sampleCurr;
+        uniform sampler2D uDent;
+        uniform vec2 uResolution;
+        uniform vec3 uIndex;      // x,y in screen UV (y top-down), z active
+        uniform vec3 uPrevIndex;
+        uniform float uTime;
+        uniform float uIntensity;
+        uniform float uRadius;
+        uniform float uDamping;
+        varying vec2 vUv;
+
+        float decode(float e) { return (e - 0.5) * 5.0; }
+        float encode(float h) { return clamp(h * 0.2 + 0.5, 0.0, 1.0); }
+
+        void main() {
+            vec2 texel = 1.0 / uResolution;
+            vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+
+            float p10 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x, 0.0)).r);
+            float p12 = decode(texture2D(sampleCurr, vUv + vec2( texel.x, 0.0)).r);
+            float p01 = decode(texture2D(sampleCurr, vUv + vec2(0.0, -texel.y)).r);
+            float p21 = decode(texture2D(sampleCurr, vUv + vec2(0.0,  texel.y)).r);
+            float p00 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x, -texel.y)).r);
+            float p20 = decode(texture2D(sampleCurr, vUv + vec2( texel.x, -texel.y)).r);
+            float p02 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x,  texel.y)).r);
+            float p22 = decode(texture2D(sampleCurr, vUv + vec2( texel.x,  texel.y)).r);
+            float prev = decode(texture2D(samplePrev, vUv).r);
+
+            float avg = (p10 + p12 + p01 + p21) * 0.2 + (p00 + p20 + p02 + p22) * 0.05;
+            float val = avg * 2.0 - prev;
+
+            // Stronger damping so sparse rings fade before cluttering the screen
+            float ampFactor = 1.0 - smoothstep(0.0, 0.05, abs(val)) * 0.02;
+            val *= uDamping * ampFactor;
+
+            // One soft, large expanding ring — only when tip moves enough (not every frame micro-ripple)
+            if (uIndex.z > 0.5) {
+                vec2 currUV = vec2(uIndex.x, 1.0 - uIndex.y);
+                vec2 prevUV = (uPrevIndex.z > 0.5)
+                    ? vec2(uPrevIndex.x, 1.0 - uPrevIndex.y)
+                    : currUV;
+                float move = length((currUV - prevUV) * aspect);
+                if (move > 0.0045) {
+                    vec2 dTip = (vUv - currUV) * aspect;
+                    float dist = length(dTip);
+                    float brushR = 0.025 * uRadius;
+                    // Wide soft annulus — sparse & calm
+                    float ringInner = brushR * 2.2;
+                    float ringOuter = brushR * 6.5;
+                    float ring = smoothstep(ringInner, ringInner + brushR * 1.2, dist)
+                               * (1.0 - smoothstep(ringOuter - brushR * 1.4, ringOuter, dist));
+                    float force = clamp(move * 18.0, 0.15, 0.55);
+                    val += ring * force * 0.07 * clamp(uIntensity, 0.4, 2.0);
+                }
+            }
+
+            gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 0.0, 1.0);
+        }
+    </script>
+
+    <!-- Final Render: frosted ice mist + clear brush trails -->
+    <script id="fs-render" type="x-shader/x-fragment">
+        precision highp float;
+        uniform sampler2D uCamera;
+        uniform sampler2D uWave;
+        uniform sampler2D uDent;
+        uniform vec2 uResolution;
+        uniform vec2 uVideoScale;
+        uniform float uMode;
+        uniform float uTime;
+        uniform float uIntensity;
+        uniform float uMirror;
+        varying vec2 vUv;
+
+        float decodeW(float e) { return (e - 0.5) * 5.0; }
+
+        #define cam(offset) texture2D(uCamera, vec2( \
+            mix(camUv.x + (offset).x, 1.0 - (camUv.x + (offset).x), uMirror), \
+            camUv.y + (offset).y))
+
+        float hash21(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+
+        void main() {
+            vec2 texel = 1.0 / uResolution;
+            float isLiquid  = 1.0 - step(0.1, abs(uMode - 0.0));
+            float isCrystal = 1.0 - step(0.1, abs(uMode - 1.0));
+
+            vec2 uv = vUv;
+            float clearMask = texture2D(uDent, uv).r; // 0 frost → 1 clear trail
+            float waveOnly = decodeW(texture2D(uWave, uv).r);
+
+            // Soft edge of clear stroke for subtle local refraction
+            float cL = texture2D(uDent, uv + vec2(-texel.x, 0.0)).r;
+            float cR = texture2D(uDent, uv + vec2( texel.x, 0.0)).r;
+            float cD = texture2D(uDent, uv + vec2(0.0, -texel.y)).r;
+            float cU = texture2D(uDent, uv + vec2(0.0,  texel.y)).r;
+            vec2 clearGrad = vec2(cR - cL, cU - cD) * 0.5;
+            float clearEdge = length(clearGrad);
+
+            vec2 aspect = vec2(1.0, uResolution.x / uResolution.y);
+            vec2 camUv  = (uv - 0.5) * uVideoScale + 0.5;
+
+            // Sharp camera (optionally slight refraction only inside clear path)
+            vec2 tipRefract = clearGrad * 0.12 * aspect * clearMask * clearEdge * 4.0;
+            tipRefract += vec2(waveOnly) * 0.01 * aspect * clearMask;
+            vec3 sharp = cam(tipRefract).rgb;
+
+            // Frosted mist: wide blur + cool desat + frost grain
+            float frostStr = clamp(0.45 + 0.28 * uIntensity, 0.35, 1.15);
+            float blurPx = mix(3.0, 9.0, clamp(frostStr, 0.0, 1.0));
+            vec2 b = texel * blurPx;
+            vec3 blurCol = cam(vec2(0.0)).rgb * 0.20;
+            blurCol += cam(vec2( b.x, 0.0)).rgb * 0.13;
+            blurCol += cam(vec2(-b.x, 0.0)).rgb * 0.13;
+            blurCol += cam(vec2(0.0,  b.y)).rgb * 0.13;
+            blurCol += cam(vec2(0.0, -b.y)).rgb * 0.13;
+            blurCol += cam(vec2( b.x,  b.y)).rgb * 0.07;
+            blurCol += cam(vec2(-b.x,  b.y)).rgb * 0.07;
+            blurCol += cam(vec2( b.x, -b.y)).rgb * 0.07;
+            blurCol += cam(vec2(-b.x, -b.y)).rgb * 0.07;
+            // Extra wide haze taps
+            blurCol += cam(vec2(2.0*b.x, 0.0)).rgb * 0.04;
+            blurCol += cam(vec2(-2.0*b.x, 0.0)).rgb * 0.04;
+            blurCol += cam(vec2(0.0, 2.0*b.y)).rgb * 0.04;
+            blurCol += cam(vec2(0.0,-2.0*b.y)).rgb * 0.04;
+            blurCol += cam(vec2(1.6*b.x, 1.6*b.y)).rgb * 0.03;
+            blurCol += cam(vec2(-1.6*b.x, 1.6*b.y)).rgb * 0.03;
+
+            float luma = dot(blurCol, vec3(0.299, 0.587, 0.114));
+            vec3 cool = mix(blurCol, vec3(luma), 0.55) * vec3(0.82, 0.90, 1.06);
+            cool = mix(cool, vec3(0.78, 0.88, 1.05), 0.22);
+
+            // Soft frost grain / ice mist
+            float g1 = hash21(uv * uResolution * 0.35 + floor(uTime * 2.0));
+            float g2 = hash21(uv * uResolution * 0.9 + 17.0);
+            float grain = (g1 * 0.65 + g2 * 0.35 - 0.5) * 0.07 * frostStr;
+            vec3 frost = cool + vec3(grain + 0.03);
+            frost = mix(frost, vec3(0.88, 0.93, 1.02), 0.12 * frostStr);
+
+            // Soft ring modulation on frost only (not busy on clear ink)
+            float waveMask = smoothstep(0.02, 0.09, abs(waveOnly));
+            frost += vec3(0.04, 0.05, 0.07) * waveMask * waveOnly * 0.8;
+
+            float wipe = smoothstep(0.08, 0.72, clearMask);
+            vec3 color = mix(frost, sharp, wipe);
+
+            // Hairline sheen on clear stroke edge (glass wipe rim)
+            float rim = smoothstep(0.02, 0.12, clearEdge) * wipe;
+            color += vec3(0.55, 0.7, 0.9) * rim * 0.12;
+
+            if (isCrystal > 0.5) {
+                // Faceted ice over the same frost/clear base
+                float steps = 14.0;
+                vec2 facet = floor(clearGrad * steps * 8.0) / steps;
+                vec3 facetCam = cam(facet * 0.08 * aspect * wipe).rgb;
+                color = mix(frost, facetCam, wipe);
+                float edgeMask = clearEdge * 6.0 * wipe;
+                color += vec3(0.7, 0.88, 1.0) * clamp(edgeMask, 0.0, 1.0) * 0.25;
+                color = mix(color, color * vec3(0.9, 0.95, 1.08), (1.0 - wipe) * 0.3);
+            }
+
+            // Liquid is the frost/clear look; crystal branch already overwrote color when active
+            if (isLiquid > 0.5) { color = color; }
+
+            gl_FragColor = vec4(color, 1.0);
+        }
+    </script>
+
+    <!-- Clear / fill (uFill: 0.5 = wave zero, 0.0 = full frost) -->
+    <script id="fs-clear" type="x-shader/x-fragment">
+        precision highp float;
+        uniform float uFill;
+        void main() {
+            gl_FragColor = vec4(uFill, 0.0, 0.0, 1.0);
+        }
+    </script>
+
+    <script>
+        const canvas = document.getElementById('glCanvas');
+        const gl = canvas.getContext('webgl', { antialias: false, depth: false, preserveDrawingBuffer: false });
+        const logEl = document.getElementById('error-log');
+        const loadingEl = document.getElementById('loading');
+
+        let width, height, simW, simH;
+        let mode = 0;
+        let intensity = 1.5;
+        let radiusMult = 1.0;
+        let damping = 0.94;
+        let cameraTex, video;
+        let handsInitialized = false;
+        let currentVideoScale = [1.0, 1.0];
+
+        // Index tip state (screen UV, y top-down like MediaPipe after mapping)
+        let indexTip = { x: 0, y: 0, active: 0 };
+        let prevIndexTip = { x: 0, y: 0, active: 0 };
+
+        // Stroke memory
+        const strokes = []; // { points: [{x,y}], intensity, radius }
+        let currentStroke = null;
+        let lastUndoTime = 0;
+        const UNDO_DEBOUNCE_MS = 400;
+
+        function showError(msg) {
+            logEl.style.display = 'block';
+            logEl.innerHTML += `<div>> ${msg}</div>`;
+            console.error(msg);
+        }
+
+        function createShader(gl, type, source) {
+            const s = gl.createShader(type);
+            gl.shaderSource(s, source);
+            gl.compileShader(s);
+            if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+                showError(gl.getShaderInfoLog(s));
+                return null;
+            }
+            return s;
+        }
+
+        function createProgram(gl, vsSrc, fsSrc) {
+            const p = gl.createProgram();
+            gl.attachShader(p, createShader(gl, gl.VERTEX_SHADER, vsSrc));
+            gl.attachShader(p, createShader(gl, gl.FRAGMENT_SHADER, fsSrc));
+            gl.linkProgram(p);
+            if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+                showError(gl.getProgramInfoLog(p));
+                return null;
+            }
+            return p;
+        }
+
+        function createTexture(gl, w, h) {
+            const tex = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            return tex;
+        }
+
+        function createFBO(gl, tex) {
+            const fbo = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+            if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+                showError("FBO incomplete");
+            }
+            return fbo;
+        }
+
+        function dist3(a, b) {
+            const dx = a.x - b.x, dy = a.y - b.y, dz = (a.z || 0) - (b.z || 0);
+            return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        function isIndexExtended(hand) {
+            const tip = hand[8], pip = hand[6], mcp = hand[5], wrist = hand[0];
+            // Require landmarks in frame
+            if (!tip || tip.x < 0.02 || tip.x > 0.98 || tip.y < 0.02 || tip.y > 0.98) return false;
+            const dTip = dist3(tip, mcp);
+            const dPip = dist3(pip, mcp);
+            if (dTip < 0.045) return false; // tip too close to MCP = not clearly present/extended
+            if (dTip <= dPip * 1.25) return false;
+            // Tip should be further from wrist than PIP (clearly sticking out)
+            if (dist3(tip, wrist) <= dist3(pip, wrist) * 1.05) return false;
+            return true;
+        }
+
+        function isFist(hand) {
+            const palm = hand[9];
+            const tips = [8, 12, 16, 20];
+            let curled = 0;
+            for (let i = 0; i < tips.length; i++) {
+                if (dist3(hand[tips[i]], palm) < 0.11) curled++;
+            }
+            // Index MCP also near palm helps reject "pointing"
+            return curled >= 3;
+        }
+
+        // MediaPipe selfieMode mirrors landmarks to match a mirrored selfie preview.
+        // Camera shader uses the same mirrorX — do NOT double-flip here.
+        function mapLandmarkToScreen(lm) {
+            let screenX = (lm.x - 0.5) / currentVideoScale[0] + 0.5;
+            let screenY = (lm.y - 0.5) / currentVideoScale[1] + 0.5;
+            return { x: screenX, y: screenY };
+        }
+
+        let currentFacingMode = 'user';
+        let videoStream = null;
+        let handsInstance = null;
+
+        function mirrorPreview() {
+            return currentFacingMode === 'user';
+        }
+
+        function applyHandsOptions() {
+            if (!handsInstance) return;
+            handsInstance.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 0,
+                minDetectionConfidence: 0.68,
+                minTrackingConfidence: 0.68,
+                selfieMode: mirrorPreview()
+            });
+        }
+
+        async function initCamera() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                showError('Camera API not available');
+                return;
+            }
+            try {
+                if (!video) {
+                    video = document.createElement('video');
+                    video.playsInline = true;
+                    video.muted = true;
+                }
+                if (videoStream) {
+                    videoStream.getTracks().forEach(track => track.stop());
+                }
+                videoStream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: currentFacingMode, width: { ideal: 1280 }, height: { ideal: 720 } }
+                });
+                video.srcObject = videoStream;
+                await video.play();
+                applyHandsOptions();
+
+                if (!handsInitialized) {
+                    const hands = new Hands({
+                        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`
+                    });
+                    handsInstance = hands;
+                    applyHandsOptions();
+                    hands.onResults((results) => {
+                        prevIndexTip.x = indexTip.x;
+                        prevIndexTip.y = indexTip.y;
+                        prevIndexTip.active = indexTip.active;
+
+                        let bestIndex = null;
+                        let rightFist = false;
+
+                        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                            for (let hi = 0; hi < results.multiHandLandmarks.length; hi++) {
+                                const hand = results.multiHandLandmarks[hi];
+                                const label = (results.multiHandedness && results.multiHandedness[hi])
+                                    ? results.multiHandedness[hi].label
+                                    : '';
+
+                                if (label === 'Right' && isFist(hand)) {
+                                    rightFist = true;
+                                }
+
+                                if (isIndexExtended(hand)) {
+                                    const pt = mapLandmarkToScreen(hand[8]);
+                                    // Prefer drawing hand that is not fisted
+                                    if (!(label === 'Right' && isFist(hand))) {
+                                        bestIndex = pt;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (rightFist) {
+                            tryUndo();
+                        }
+
+                        if (bestIndex) {
+                            indexTip.x = bestIndex.x;
+                            indexTip.y = bestIndex.y;
+                            indexTip.active = 1;
+                            onIndexDraw(bestIndex.x, bestIndex.y);
+                        } else {
+                            indexTip.active = 0;
+                            endCurrentStroke();
+                        }
+                    });
+
+                    async function detectHands() {
+                        if (video && video.readyState >= 2) {
+                            await hands.send({ image: video });
+                        }
+                        requestAnimationFrame(detectHands);
+                    }
+                    detectHands();
+                    handsInitialized = true;
+                }
+
+                if (!cameraTex) cameraTex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, cameraTex);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+                loadingEl.style.display = 'none';
+            } catch (e) {
+                showError('Camera access denied: ' + e.message);
+            }
+        }
+
+        let programs = {}, buffers = {};
+        // Wave ping-pong
+        let waveFboA, waveFboB, waveFboC, waveTexA, waveTexB, waveTexC;
+        // Dent ping-pong
+        let dentFboA, dentFboB, dentTexA, dentTexB;
+        let dentReadIsA = true;
+
+        function initGL() {
+            const vsSrc = document.getElementById('vs').text;
+            programs.physics = createProgram(gl, vsSrc, document.getElementById('fs-physics').text);
+            programs.render = createProgram(gl, vsSrc, document.getElementById('fs-render').text);
+            programs.dent = createProgram(gl, vsSrc, document.getElementById('fs-dent').text);
+            programs.clear = createProgram(gl, vsSrc, document.getElementById('fs-clear').text);
+
+            const quad = new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]);
+            const vbo = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+            gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+            buffers.quad = vbo;
+
+            resize();
+            window.addEventListener('resize', resize);
+        }
+
+        function bindQuad(prog) {
+            const loc = gl.getAttribLocation(prog, 'position');
+            gl.enableVertexAttribArray(loc);
+            gl.bindBuffer(gl.ARRAY_BUFFER, buffers.quad);
+            gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+        }
+
+        function clearTarget(fbo, fill) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+            gl.viewport(0, 0, simW, simH);
+            gl.useProgram(programs.clear);
+            bindQuad(programs.clear);
+            gl.uniform1f(gl.getUniformLocation(programs.clear, 'uFill'), fill);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+            gl.viewport(0, 0, width, height);
+
+            simW = Math.max(2, Math.floor(width / 2));
+            simH = Math.max(2, Math.floor(height / 2));
+
+            waveTexA = createTexture(gl, simW, simH);
+            waveFboA = createFBO(gl, waveTexA);
+            waveTexB = createTexture(gl, simW, simH);
+            waveFboB = createFBO(gl, waveTexB);
+            waveTexC = createTexture(gl, simW, simH);
+            waveFboC = createFBO(gl, waveTexC);
+
+            dentTexA = createTexture(gl, simW, simH);
+            dentFboA = createFBO(gl, dentTexA);
+            dentTexB = createTexture(gl, simW, simH);
+            dentFboB = createFBO(gl, dentTexB);
+            dentReadIsA = true;
+
+            clearTarget(waveFboA, 0.5);
+            clearTarget(waveFboB, 0.5);
+            clearTarget(waveFboC, 0.5);
+            clearTarget(dentFboA, 0.0);
+            clearTarget(dentFboB, 0.0);
+
+            // Restored persistent strokes after resize
+            restampAllStrokes();
+        }
+
+        function getDentRead() {
+            return dentReadIsA ? { tex: dentTexA, fbo: dentFboA } : { tex: dentTexB, fbo: dentFboB };
+        }
+        function getDentWrite() {
+            return dentReadIsA ? { tex: dentTexB, fbo: dentFboB } : { tex: dentTexA, fbo: dentFboA };
+        }
+        function swapDent() { dentReadIsA = !dentReadIsA; }
+
+        function stampSegment(ax, ay, bx, by, depth, rad) {
+            // ax,ay screen UV (y top-down) → shader UV (y bottom-up)
+            const A = [ax, 1.0 - ay];
+            const B = [bx, 1.0 - by];
+            const read = getDentRead();
+            const write = getDentWrite();
+
+            gl.bindFramebuffer(gl.FRAMEBUFFER, write.fbo);
+            gl.viewport(0, 0, simW, simH);
+            gl.useProgram(programs.dent);
+            bindQuad(programs.dent);
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, read.tex);
+            gl.uniform1i(gl.getUniformLocation(programs.dent, 'uPrevDent'), 0);
+            gl.uniform2f(gl.getUniformLocation(programs.dent, 'uResolution'), simW, simH);
+            gl.uniform2f(gl.getUniformLocation(programs.dent, 'uBrushA'), A[0], A[1]);
+            gl.uniform2f(gl.getUniformLocation(programs.dent, 'uBrushB'), B[0], B[1]);
+            gl.uniform1f(gl.getUniformLocation(programs.dent, 'uRadius'), rad);
+            gl.uniform1f(gl.getUniformLocation(programs.dent, 'uDepth'), depth);
+            gl.uniform1f(gl.getUniformLocation(programs.dent, 'uStamp'), 1.0);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            swapDent();
+        }
+
+        function clearDentField() {
+            clearTarget(dentFboA, 0.0);
+            clearTarget(dentFboB, 0.0);
+            dentReadIsA = true;
+        }
+
+        function restampAllStrokes() {
+            clearDentField();
+            const all = strokes.slice();
+            if (currentStroke && currentStroke.points.length) all.push(currentStroke);
+            for (let s = 0; s < all.length; s++) {
+                const stroke = all[s];
+                const pts = stroke.points;
+                const depth = Math.min(1.0, 0.7 + 0.2 * (stroke.intensity || intensity));
+                const rad = stroke.radius || radiusMult;
+                if (pts.length === 1) {
+                    stampSegment(pts[0].x, pts[0].y, pts[0].x, pts[0].y, depth, rad);
+                } else {
+                    for (let i = 1; i < pts.length; i++) {
+                        stampSegment(pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y, depth, rad);
+                    }
+                }
+            }
+        }
+
+        function onIndexDraw(x, y) {
+            if (!currentStroke) {
+                currentStroke = { points: [{ x, y }], intensity, radius: radiusMult };
+                stampSegment(x, y, x, y, Math.min(1.0, 0.7 + 0.2 * intensity), radiusMult);
+                return;
+            }
+            const last = currentStroke.points[currentStroke.points.length - 1];
+            const dx = x - last.x, dy = y - last.y;
+            if (dx * dx + dy * dy < 0.00005) return; // skip tiny jitter
+            currentStroke.points.push({ x, y });
+            stampSegment(last.x, last.y, x, y, Math.min(1.0, 0.7 + 0.2 * intensity), radiusMult);
+        }
+
+        function endCurrentStroke() {
+            if (currentStroke && currentStroke.points.length > 0) {
+                strokes.push(currentStroke);
+            }
+            currentStroke = null;
+        }
+
+        function tryUndo() {
+            const now = performance.now();
+            if (now - lastUndoTime < UNDO_DEBOUNCE_MS) return;
+            lastUndoTime = now;
+            performUndo();
+        }
+
+        function performUndo() {
+            endCurrentStroke();
+            if (strokes.length === 0) return;
+            strokes.pop();
+            restampAllStrokes();
+        }
+
+        function performClear() {
+            endCurrentStroke();
+            strokes.length = 0;
+            clearDentField();
+            clearTarget(waveFboA, 0.5);
+            clearTarget(waveFboB, 0.5);
+            clearTarget(waveFboC, 0.5);
+        }
+
+        function swapWave() {
+            let tempF = waveFboA; waveFboA = waveFboB; waveFboB = waveFboC; waveFboC = tempF;
+            let tempT = waveTexA; waveTexA = waveTexB; waveTexB = waveTexC; waveTexC = tempT;
+        }
+
+        function render(time) {
+            if (video && video.readyState >= 2) {
+                gl.bindTexture(gl.TEXTURE_2D, cameraTex);
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+            }
+
+            // 1. Wave physics
+            gl.bindFramebuffer(gl.FRAMEBUFFER, waveFboC);
+            gl.viewport(0, 0, simW, simH);
+            gl.useProgram(programs.physics);
+            bindQuad(programs.physics);
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, waveTexA);
+            gl.uniform1i(gl.getUniformLocation(programs.physics, 'samplePrev'), 0);
+
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, waveTexB);
+            gl.uniform1i(gl.getUniformLocation(programs.physics, 'sampleCurr'), 1);
+
+            const dentTex = getDentRead().tex;
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, dentTex);
+            gl.uniform1i(gl.getUniformLocation(programs.physics, 'uDent'), 2);
+
+            gl.uniform2f(gl.getUniformLocation(programs.physics, 'uResolution'), simW, simH);
+            gl.uniform3f(gl.getUniformLocation(programs.physics, 'uIndex'), indexTip.x, indexTip.y, indexTip.active);
+            gl.uniform3f(gl.getUniformLocation(programs.physics, 'uPrevIndex'), prevIndexTip.x, prevIndexTip.y, prevIndexTip.active);
+            gl.uniform1f(gl.getUniformLocation(programs.physics, 'uTime'), time * 0.001);
+            gl.uniform1f(gl.getUniformLocation(programs.physics, 'uIntensity'), intensity);
+            gl.uniform1f(gl.getUniformLocation(programs.physics, 'uRadius'), radiusMult);
+            gl.uniform1f(gl.getUniformLocation(programs.physics, 'uDamping'), damping);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            // Advance prev index for next wave frame (hand callback also updates; keep in sync)
+            if (!handsInitialized) {
+                prevIndexTip.x = indexTip.x;
+                prevIndexTip.y = indexTip.y;
+                prevIndexTip.active = indexTip.active;
+            }
+
+            swapWave();
+
+            // 2. Final render
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.viewport(0, 0, width, height);
+            gl.useProgram(programs.render);
+            bindQuad(programs.render);
+
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, cameraTex || waveTexB);
+            gl.uniform1i(gl.getUniformLocation(programs.render, 'uCamera'), 0);
+
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, waveTexB);
+            gl.uniform1i(gl.getUniformLocation(programs.render, 'uWave'), 1);
+
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, getDentRead().tex);
+            gl.uniform1i(gl.getUniformLocation(programs.render, 'uDent'), 2);
+
+            gl.uniform2f(gl.getUniformLocation(programs.render, 'uResolution'), width, height);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uMode'), mode);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uTime'), time * 0.001);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uIntensity'), intensity);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'), mirrorPreview() ? 1.0 : 0.0);
+
+            if (video && video.videoWidth) {
+                let screenAspect = width / height;
+                let videoAspect = video.videoWidth / video.videoHeight;
+                if (screenAspect < videoAspect) {
+                    currentVideoScale[0] = screenAspect / videoAspect;
+                    currentVideoScale[1] = 1.0;
+                } else {
+                    currentVideoScale[0] = 1.0;
+                    currentVideoScale[1] = videoAspect / screenAspect;
+                }
+            }
+            gl.uniform2fv(gl.getUniformLocation(programs.render, 'uVideoScale'), currentVideoScale);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+            requestAnimationFrame(render);
+        }
+
+        // Optional pointer fallback (no camera)
+        let pointerDown = false;
+        function pointerPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return {
+                x: (clientX - rect.left) / rect.width,
+                y: (clientY - rect.top) / rect.height
+            };
+        }
+        function onPointerDown(e) {
+            if (e.target.closest && e.target.closest('button, input, #controls, #ui-overlay, #top-controls')) return;
+            if (videoStream) return; // prefer hands when camera on
+            pointerDown = true;
+            const p = pointerPos(e);
+            indexTip.x = p.x; indexTip.y = p.y; indexTip.active = 1;
+            onIndexDraw(p.x, p.y);
+        }
+        function onPointerMove(e) {
+            if (!pointerDown) return;
+            const p = pointerPos(e);
+            prevIndexTip.x = indexTip.x; prevIndexTip.y = indexTip.y; prevIndexTip.active = indexTip.active;
+            indexTip.x = p.x; indexTip.y = p.y; indexTip.active = 1;
+            onIndexDraw(p.x, p.y);
+        }
+        function onPointerUp() {
+            if (!pointerDown) return;
+            pointerDown = false;
+            indexTip.active = 0;
+            endCurrentStroke();
+        }
+        canvas.addEventListener('mousedown', onPointerDown);
+        window.addEventListener('mousemove', onPointerMove);
+        window.addEventListener('mouseup', onPointerUp);
+        canvas.addEventListener('touchstart', (e) => { onPointerDown(e); }, { passive: true });
+        window.addEventListener('touchmove', (e) => { onPointerMove(e); }, { passive: true });
+        window.addEventListener('touchend', onPointerUp);
+
+        document.querySelectorAll('#ui-overlay .mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('#ui-overlay .mode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                mode = parseFloat(btn.dataset.mode);
+            });
+        });
+
+        document.getElementById('intensity').addEventListener('input', (e) => {
+            intensity = parseFloat(e.target.value);
+        });
+        document.getElementById('radius').addEventListener('input', (e) => {
+            radiusMult = parseFloat(e.target.value);
+        });
+        document.getElementById('damping').addEventListener('input', (e) => {
+            damping = parseFloat(e.target.value);
+        });
+
+        document.getElementById('btn-undo').addEventListener('click', (e) => {
+            e.stopPropagation();
+            lastUndoTime = performance.now();
+            performUndo();
+        });
+        document.getElementById('btn-clear').addEventListener('click', (e) => {
+            e.stopPropagation();
+            performClear();
+        });
+
+        const uiElements = [document.getElementById('controls'), document.getElementById('ui-overlay'), document.getElementById('top-controls'), document.getElementById('hint-cn')];
+        const showHint = document.getElementById('show-hint');
+        let uiHidden = false;
+
+        document.getElementById('btn-hide').addEventListener('click', (e) => {
+            e.stopPropagation();
+            uiElements.forEach(el => el.style.display = 'none');
+            showHint.style.display = 'block';
+            uiHidden = true;
+            setTimeout(() => {
+                showHint.style.transition = 'opacity 1s ease-out';
+                showHint.style.opacity = '0';
+            }, 2000);
+        });
+
+        window.addEventListener('click', () => {
+            if (uiHidden) {
+                uiElements.forEach(el => {
+                    el.style.display = el.id === 'top-controls' ? 'flex' : (el.id === 'ui-overlay' ? 'flex' : (el.id === 'hint-cn' ? 'block' : 'flex'));
+                });
+                showHint.style.display = 'none';
+                showHint.style.opacity = '1';
+                showHint.style.transition = 'none';
+                uiHidden = false;
+            }
+        });
+
+        document.getElementById('btn-camera').addEventListener('click', (e) => {
+            e.stopPropagation();
+            currentFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+            initCamera();
+        });
+
+        if (gl) {
+            initGL();
+            initCamera();
+            requestAnimationFrame(render);
+        } else {
+            showError("WebGL not supported");
+        }
+    </script>
+</body>
+</html>
