@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: hardness-slider-v2 2026-11-04 -->
+    <!-- build: brush-edge-color-v1 2026-11-04 -->
     <style>
         * {
             margin: 0;
@@ -147,6 +147,77 @@
             color: #000;
         }
 
+
+        #panel .color-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            width: 100%;
+            flex-shrink: 0;
+        }
+
+        #panel .color-row .color-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        #panel .color-row .color-head label {
+            font-size: 12px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            color: #eee;
+            white-space: nowrap;
+        }
+
+        #panel .color-row input[type=color] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 36px;
+            height: 28px;
+            border: 1px solid rgba(255,255,255,0.25);
+            border-radius: 8px;
+            padding: 0;
+            background: transparent;
+            cursor: pointer;
+        }
+
+        #panel .color-row input[type=color]::-webkit-color-swatch-wrapper {
+            padding: 2px;
+        }
+
+        #panel .color-row input[type=color]::-webkit-color-swatch {
+            border: none;
+            border-radius: 6px;
+        }
+
+        #panel .swatch-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        #panel .swatch {
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.25);
+            cursor: pointer;
+            padding: 0;
+            background: #888;
+        }
+
+        #panel .swatch.active {
+            border-color: #fff;
+            box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+        }
+
+        #panel .swatch.rainbow {
+            background: conic-gradient(#ff0040, #ffcc00, #00ff66, #00aaff, #aa00ff, #ff0040);
+        }
+
         #error-log {
             position: absolute;
             top: 20px;
@@ -231,6 +302,35 @@
         <div class="slider-row">
             <label for="damping">波纹衰减</label>
             <input type="range" id="damping" min="0.92" max="0.998" step="0.001" value="0.990">
+        </div>
+        <div class="color-row">
+            <div class="color-head">
+                <label for="brushColor">笔触颜色</label>
+                <input type="color" id="brushColor" value="#4aa3ff">
+            </div>
+            <div class="swatch-row" id="brush-swatches">
+                <button type="button" class="swatch" data-color="#ffffff" title="白" style="background:#ffffff;"></button>
+                <button type="button" class="swatch" data-color="#7ec8ff" title="青" style="background:#7ec8ff;"></button>
+                <button type="button" class="swatch active" data-color="#4aa3ff" title="蓝" style="background:#4aa3ff;"></button>
+                <button type="button" class="swatch" data-color="#f0a868" title="琥珀" style="background:#f0a868;"></button>
+                <button type="button" class="swatch" data-color="#ff6b8a" title="玫红" style="background:#ff6b8a;"></button>
+                <button type="button" class="swatch" data-color="#a78bfa" title="紫" style="background:#a78bfa;"></button>
+                <button type="button" class="swatch rainbow" data-color="rainbow" title="彩色"></button>
+            </div>
+        </div>
+        <div class="color-row">
+            <div class="color-head">
+                <label for="edgeGlow">边缘透光</label>
+                <input type="color" id="edgeGlow" value="#c8e8ff">
+            </div>
+            <div class="swatch-row" id="edge-swatches">
+                <button type="button" class="swatch active" data-color="#c8e8ff" title="冰白" style="background:#c8e8ff;"></button>
+                <button type="button" class="swatch" data-color="#9fdfff" title="青" style="background:#9fdfff;"></button>
+                <button type="button" class="swatch" data-color="#ffe29a" title="暖金" style="background:#ffe29a;"></button>
+                <button type="button" class="swatch" data-color="#ff9ec4" title="粉" style="background:#ff9ec4;"></button>
+                <button type="button" class="swatch" data-color="#b8a0ff" title="紫" style="background:#b8a0ff;"></button>
+                <button type="button" class="swatch rainbow" data-color="rainbow" title="彩色"></button>
+            </div>
         </div>
     </div>
 
@@ -408,6 +508,10 @@
         uniform float uBlur;      // refraction blur strength from 模糊程度
         uniform float uHardness;  // 边缘硬度 — soft = gentler wipe rim
         uniform float uOrigWave;  // 1 = 原版流动折射, 0 = 柔和
+        uniform vec3  uBrushColor;    // 笔触颜色 tint
+        uniform float uBrushRainbow;  // 1 = 彩色彩虹 along stroke/time
+        uniform vec3  uEdgeGlow;      // 边缘透光 / fresnel / caustic color
+        uniform float uEdgeRainbow;   // 1 = prismatic ceiling-water edge
         varying vec2 vUv;
 
         float decode(float e) { return (e - 0.5) * 5.0; }
@@ -437,6 +541,16 @@
             float d = hash21(i + vec2(1.0, 1.0));
             vec2 u = f * f * (3.0 - 2.0 * f);
             return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+        }
+
+        // HSV→RGB for rainbow / prismatic ceiling-water look
+        vec3 hsv2rgb(vec3 c) {
+            vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+            return c.z * mix(vec3(1.0), rgb, c.y);
+        }
+        vec3 prismHue(float t) {
+            // dense overlapping caustic hues (ceiling pool light)
+            return hsv2rgb(vec3(fract(t), 0.85, 1.0));
         }
 
         float beadField(vec2 uv, float dens) {
@@ -596,13 +710,26 @@
             float depthDrive = waveOnly * mix(0.70, 2.0, uOrigWave) + dentOnly * mix(0.35, 0.20, uOrigWave);
             float brightness = 1.0 + clamp(depthDrive, mix(-0.12, -0.35, uOrigWave), mix(0.20, 0.42, uOrigWave));
             wet *= mix(1.0, brightness, clamp(waveMask * mix(0.85, 1.0, uOrigWave) + grooveMask * 0.25, 0.0, 1.0));
-            // Very light cool sheen on edges only (not whole stroke mud tint)
-            wet = mix(wet, wet * vec3(0.92, 0.97, 1.05), edgeWipe * 0.18);
-            wet += vec3(0.55, 0.75, 0.95) * edgeWipe * abs(waveOnly) * mix(0.42, 0.55, uOrigWave);
+            // Brush / dent tint — soft multiply so camera still reads through
+            float brushHueT = fract(uv.x * 1.7 + uv.y * 2.3 + uTime * 0.12 + grooveMask * 0.35);
+            vec3 brushTint = mix(uBrushColor, prismHue(brushHueT), clamp(uBrushRainbow, 0.0, 1.0));
+            float tintAmt = clamp(grooveMask * 0.55 + seeThru * 0.22, 0.0, 0.72);
+            wet = mix(wet, wet * mix(vec3(1.0), brushTint, 0.72) + brushTint * 0.08, tintAmt);
+
+            // Edge glow color (solid or prismatic ceiling-water caustic)
+            float edgeHueT = fract(gradLen * 6.0 + uv.x * 3.1 - uv.y * 2.4 + uTime * 0.18 + abs(waveOnly) * 4.0);
+            vec3 edgeCol = mix(uEdgeGlow, prismHue(edgeHueT), clamp(uEdgeRainbow, 0.0, 1.0));
+            // Secondary prism bands for dense overlapping ceiling-pool look when rainbow
+            vec3 edgeCol2 = prismHue(fract(edgeHueT + 0.33 + lap * 8.0));
+            vec3 edgeCol3 = prismHue(fract(edgeHueT + 0.66 + waveOnly * 5.0));
+            vec3 edgePrism = mix(edgeCol, (edgeCol + edgeCol2 + edgeCol3) / 3.0, clamp(uEdgeRainbow, 0.0, 1.0) * 0.85);
+
+            wet = mix(wet, wet * mix(vec3(1.0), edgePrism, 0.55), edgeWipe * 0.28);
+            wet += edgePrism * edgeWipe * abs(waveOnly) * mix(0.42, 0.70, uOrigWave);
             float valleyMask = clamp(-waveOnly * mix(8.0, 12.0, uOrigWave), 0.0, 1.0);
-            wet = mix(wet, wet * vec3(0.90, 0.95, 1.03), valleyMask * mix(0.18, 0.45, uOrigWave) * waveMask);
+            wet = mix(wet, wet * mix(vec3(0.92), edgePrism * 0.85 + vec3(0.08), 0.35), valleyMask * mix(0.18, 0.45, uOrigWave) * waveMask);
             float crestMask = clamp(waveOnly * 10.0, 0.0, 1.0);
-            wet = mix(wet, wet * vec3(1.05, 1.02, 0.97), crestMask * mix(0.20, 0.38, uOrigWave) * waveMask);
+            wet = mix(wet, wet * mix(vec3(1.04), edgePrism * 1.05, 0.4), crestMask * mix(0.20, 0.38, uOrigWave) * waveMask);
 
             // Living normals / fresnel / specular across the stroke (not only edges)
             float zN = 0.90 / (uIntensity + 0.01);
@@ -613,7 +740,7 @@
             fresnel = mix(fresnel, min(fresnel * 1.25, 1.0), clamp(edgeWipe + waveMask * 0.5, 0.0, 1.0));
             vec2 reflUV  = totalOffset * -1.25 * aspect;
             vec3 reflection = sampleCam(camUv, reflUV).rgb;
-            reflection = mix(reflection, reflection * vec3(0.92, 0.96, 1.0), 0.18);
+            reflection = mix(reflection, reflection * mix(vec3(0.92, 0.96, 1.0), edgePrism, 0.35), 0.22);
             wet = mix(wet, reflection, fresnel * clamp(uIntensity * mix(0.38, 0.50, uOrigWave), 0.0, mix(0.55, 0.75, uOrigWave)) * distortAmt);
 
             vec3 halfVec    = normalize(mainLight + viewDir);
@@ -622,10 +749,16 @@
             float specSharp = pow(NdotH, 180.0) * 2.0 * wetSpec;
             float specBroad = pow(NdotH, 28.0)  * 0.24 * wetSpec;
             float rim = pow(1.0 - cosTheta, 3.0) * (edgeWipe * 0.55 + waveMask * 0.25);
-            wet += vec3(specSharp + specBroad + rim) * uIntensity;
+            // Spec / rim pick up edge glow (ceiling caustic sparkle)
+            wet += edgePrism * (specSharp + specBroad + rim) * uIntensity;
             float causticMask = grooveMask * smoothstep(0.01, 0.06, abs(lap)) * 0.28
                               + waveMask * smoothstep(0.02, 0.08, abs(waveOnly)) * mix(0.42, 0.70, uOrigWave);
-            wet += vec3(0.95, 0.98, 1.0) * causticMask * uIntensity * mix(0.24, 0.45, uOrigWave);
+            // Dense overlapping caustic shafts through the surface
+            float causticBands = 0.55 + 0.45 * sin(lap * 55.0 + uTime * 3.5)
+                               + 0.35 * sin(waveOnly * 40.0 - uTime * 2.2 + uv.x * 20.0);
+            causticBands = clamp(causticBands, 0.0, 1.35);
+            wet += edgePrism * causticMask * causticBands * uIntensity * mix(0.28, 0.58, uOrigWave);
+            wet += edgeCol2 * causticMask * (1.0 - causticBands * 0.5) * uIntensity * 0.22 * clamp(uEdgeRainbow, 0.0, 1.0);
 
             // Crystal branch kept; UI stays liquid (mode=0)
             if (isCrystal > 0.5) {
@@ -646,8 +779,8 @@
 
             // Living wet stroke through mask — still animated, just clearer
             vec3 livingWet = wet;
-            vec3 wetRim = mix(overlay, livingWet, 0.72) + abs(waveOnly) * vec3(0.35, 0.55, 0.8) * edgeWipe * 0.48;
-            wetRim += vec3(0.5, 0.7, 0.95) * edgeWipe * (0.07 + abs(sin(uTime * 5.5 + grooveMask * 28.0)) * 0.09);
+            vec3 wetRim = mix(overlay, livingWet, 0.72) + abs(waveOnly) * edgePrism * edgeWipe * 0.55;
+            wetRim += edgePrism * edgeWipe * (0.08 + abs(sin(uTime * 5.5 + grooveMask * 28.0)) * 0.12);
 
             vec3 color = livingWet;
             if (maskNone < 0.5) {
@@ -685,6 +818,10 @@
         let blurAmount = 0.35; // 模糊程度
         let edgeHardness = 0.40; // 边缘硬度 0 soft gradual → 1 hard rim
         let origWave = 1.0; // 1=原版波纹 (default), 0=柔和
+        let brushColor = [0.29, 0.64, 1.0]; // 笔触颜色 default 蓝
+        let brushRainbow = 0.0;
+        let edgeGlow = [0.78, 0.91, 1.0]; // 边缘透光 default 冰白
+        let edgeRainbow = 0.0;
         let cameraTex, video;
         let bgImageTex = null;
         let bgImageEl = null;
@@ -1232,6 +1369,10 @@
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uBlur'), blurAmount);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uHardness'), edgeHardness);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uOrigWave'), origWave);
+            gl.uniform3f(gl.getUniformLocation(programs.render, 'uBrushColor'), brushColor[0], brushColor[1], brushColor[2]);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uBrushRainbow'), brushRainbow);
+            gl.uniform3f(gl.getUniformLocation(programs.render, 'uEdgeGlow'), edgeGlow[0], edgeGlow[1], edgeGlow[2]);
+            gl.uniform1f(gl.getUniformLocation(programs.render, 'uEdgeRainbow'), edgeRainbow);
             // Photos are not mirrored; live front camera still is
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMirror'),
                 (useBgImage ? 0.0 : (mirrorPreview() ? 1.0 : 0.0)));
@@ -1375,6 +1516,64 @@
         document.getElementById('hardness').addEventListener('input', (e) => {
             edgeHardness = parseFloat(e.target.value);
         });
+
+        function hexToRgb01(hex) {
+            const h = (hex || '#ffffff').replace('#', '');
+            const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+            const n = parseInt(full, 16);
+            return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+        }
+        function rgb01ToHex(rgb) {
+            const to = (v) => Math.max(0, Math.min(255, Math.round(v * 255))).toString(16).padStart(2, '0');
+            return '#' + to(rgb[0]) + to(rgb[1]) + to(rgb[2]);
+        }
+        function setBrushFromHex(hex, isRainbow) {
+            brushRainbow = isRainbow ? 1.0 : 0.0;
+            if (!isRainbow) {
+                brushColor = hexToRgb01(hex);
+                const el = document.getElementById('brushColor');
+                if (el) el.value = hex;
+            }
+            document.querySelectorAll('#brush-swatches .swatch').forEach(b => {
+                const rain = b.dataset.color === 'rainbow';
+                b.classList.toggle('active', isRainbow ? rain : (!rain && b.dataset.color.toLowerCase() === hex.toLowerCase()));
+            });
+        }
+        function setEdgeFromHex(hex, isRainbow) {
+            edgeRainbow = isRainbow ? 1.0 : 0.0;
+            if (!isRainbow) {
+                edgeGlow = hexToRgb01(hex);
+                const el = document.getElementById('edgeGlow');
+                if (el) el.value = hex;
+            }
+            document.querySelectorAll('#edge-swatches .swatch').forEach(b => {
+                const rain = b.dataset.color === 'rainbow';
+                b.classList.toggle('active', isRainbow ? rain : (!rain && b.dataset.color.toLowerCase() === hex.toLowerCase()));
+            });
+        }
+        document.getElementById('brushColor').addEventListener('input', (e) => {
+            setBrushFromHex(e.target.value, false);
+        });
+        document.getElementById('edgeGlow').addEventListener('input', (e) => {
+            setEdgeFromHex(e.target.value, false);
+        });
+        document.querySelectorAll('#brush-swatches .swatch').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const c = btn.dataset.color;
+                setBrushFromHex(c === 'rainbow' ? '#4aa3ff' : c, c === 'rainbow');
+            });
+        });
+        document.querySelectorAll('#edge-swatches .swatch').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const c = btn.dataset.color;
+                setEdgeFromHex(c === 'rainbow' ? '#c8e8ff' : c, c === 'rainbow');
+            });
+        });
+        // sync defaults
+        setBrushFromHex('#4aa3ff', false);
+        setEdgeFromHex('#c8e8ff', false);
 
         document.getElementById('btn-undo').addEventListener('click', (e) => {
             e.stopPropagation();
