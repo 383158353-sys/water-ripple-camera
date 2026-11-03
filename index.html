@@ -438,86 +438,89 @@
             float gradLen = length(grad);
 
             float grooveMask = clamp(-dentOnly * 10.0, 0.0, 1.0);
-            float waveMask = smoothstep(0.012, 0.06, abs(waveOnly));
+            float waveMask = smoothstep(0.010, 0.055, abs(waveOnly));
             float activeMask = clamp(grooveMask + waveMask, 0.0, 1.0);
-            // Wipe through overlay = carved stroke (persistent)
+            // Living wet stroke through overlay (persistent groove + living waves)
             float wipe = smoothstep(0.04, 0.72, grooveMask);
-            // Interior of wipe must stay sharp clear photo; only edges/waves distort
-            float wipeCore = smoothstep(0.08, 0.85, grooveMask);
-            float clearFade = 1.0 - wipeCore * 0.92;
             float edgeWipe = smoothstep(0.02, 0.18, grooveMask) * (1.0 - smoothstep(0.55, 0.95, grooveMask));
-            float distortAmt = clamp(waveMask * 0.95 + edgeWipe * 0.85 + (1.0 - wipeCore) * activeMask * 0.25, 0.0, 1.0) * clearFade;
+            // Soft see-through: raise base visibility without killing stroke motion
+            float seeThru = smoothstep(0.06, 0.80, grooveMask);
 
             vec3 viewDir   = vec3(0.0, 0.0, 1.0);
             vec3 mainLight = normalize(vec3(0.4, 0.7, 1.0));
             float lap = (cl + cr + tc + bc) * 0.25 - data;
 
-            float refractStr = 0.42 * uIntensity * clearFade;
+            // Distortion stays alive: waves strong, soft dent contributes gently
+            float distortAmt = clamp(waveMask * 1.05 + grooveMask * 0.42 + edgeWipe * 0.35, 0.0, 1.0);
+            float refractStr = 0.38 * uIntensity;
             vec2 refractOffset = grad * refractStr * aspect * distortAmt;
-            float lensStr = 0.12 * uIntensity * clearFade;
+            float lensStr = 0.11 * uIntensity;
             vec2 gradDir  = grad / max(gradLen, 0.001);
             vec2 lensOffset = gradDir * lap * lensStr * aspect * distortAmt;
             vec2 totalOffset = refractOffset + lensOffset;
 
-            float dispersion = clamp(gradLen * 0.10, 0.0, 0.06) * distortAmt;
+            float dispersion = clamp(gradLen * 0.09, 0.0, 0.055) * distortAmt;
             vec2 rOff = totalOffset * (1.0 + dispersion);
             vec2 bOff = totalOffset * (1.0 - dispersion);
-            float blur = gradLen * 0.50 * max(uBlur, 0.0) * distortAmt;
+            // Mild blur only — avoid grainy mud inside stroke
+            float blur = gradLen * 0.28 * max(uBlur, 0.0) * distortAmt * mix(1.0, 0.55, seeThru);
 
             vec3 clearBase = sampleCam(camUv, vec2(0.0)).rgb;
             vec3 wet = vec3(0.0);
-            if (distortAmt < 0.06) {
+            if (activeMask < 0.05) {
                 wet = clearBase;
             } else {
                 wet.r = (sampleCam(camUv, rOff).r + sampleCam(camUv, rOff + texel * blur).r + sampleCam(camUv, rOff - texel * blur).r) / 3.0;
                 wet.g = (sampleCam(camUv, totalOffset).g + sampleCam(camUv, totalOffset + texel * blur).g + sampleCam(camUv, totalOffset - texel * blur).g) / 3.0;
                 wet.b = (sampleCam(camUv, bOff).b + sampleCam(camUv, bOff + texel * blur).b + sampleCam(camUv, bOff - texel * blur).b) / 3.0;
             }
-            // Pull wipe interior hard toward unperturbed photo (no muddy sludge)
-            wet = mix(wet, clearBase, wipeCore * 0.90);
+            // Glassy see-through: more of the photo shows through, refraction still visible
+            wet = mix(wet, clearBase, seeThru * 0.38);
 
-            // Wave brightness only — do NOT darken / blue-tint the carved core
-            float depthDrive = waveOnly * 0.85;
-            float brightness = 1.0 + clamp(depthDrive, -0.18, 0.22);
-            wet *= mix(1.0, brightness, waveMask * clearFade);
-            float grooveEdge = edgeWipe;
-            wet += vec3(0.55, 0.75, 0.95) * grooveEdge * abs(waveOnly) * 0.40;
+            // No heavy darkening / blue sludge — light wave-driven lift only
+            float depthDrive = waveOnly * 0.70 + dentOnly * 0.35;
+            float brightness = 1.0 + clamp(depthDrive, -0.12, 0.20);
+            wet *= mix(1.0, brightness, clamp(waveMask * 0.85 + grooveMask * 0.25, 0.0, 1.0));
+            // Very light cool sheen on edges only (not whole stroke mud tint)
+            wet = mix(wet, wet * vec3(0.92, 0.97, 1.05), edgeWipe * 0.18);
+            wet += vec3(0.55, 0.75, 0.95) * edgeWipe * abs(waveOnly) * 0.42;
             float valleyMask = clamp(-waveOnly * 8.0, 0.0, 1.0);
-            wet = mix(wet, wet * vec3(0.88, 0.94, 1.04), valleyMask * 0.22 * waveMask * clearFade);
+            wet = mix(wet, wet * vec3(0.90, 0.95, 1.03), valleyMask * 0.18 * waveMask);
             float crestMask = clamp(waveOnly * 10.0, 0.0, 1.0);
-            wet = mix(wet, wet * vec3(1.04, 1.02, 0.97), crestMask * 0.18 * waveMask * clearFade);
+            wet = mix(wet, wet * vec3(1.05, 1.02, 0.97), crestMask * 0.20 * waveMask);
 
-            float zN = 0.95 / (uIntensity + 0.01);
-            zN *= mix(1.0, 0.85, edgeWipe);
-            vec3 normal  = normalize(vec3(-grad.x * clearFade, -grad.y * clearFade, zN));
+            // Living normals / fresnel / specular across the stroke (not only edges)
+            float zN = 0.90 / (uIntensity + 0.01);
+            zN *= mix(1.0, 0.78, clamp(grooveMask * 0.55 + waveMask, 0.0, 1.0));
+            vec3 normal  = normalize(vec3(-grad.x, -grad.y, zN));
             float cosTheta = max(dot(normal, viewDir), 0.0);
             float fresnel  = 0.02 + 0.98 * pow(1.0 - cosTheta, 5.0);
-            fresnel = mix(fresnel, min(fresnel * 1.2, 1.0), edgeWipe);
-            vec2 reflUV  = totalOffset * -1.2 * aspect;
+            fresnel = mix(fresnel, min(fresnel * 1.25, 1.0), clamp(edgeWipe + waveMask * 0.5, 0.0, 1.0));
+            vec2 reflUV  = totalOffset * -1.25 * aspect;
             vec3 reflection = sampleCam(camUv, reflUV).rgb;
-            reflection = mix(reflection, reflection * vec3(0.92, 0.96, 1.0), 0.2);
-            wet = mix(wet, reflection, fresnel * clamp(uIntensity * 0.35, 0.0, 0.5) * distortAmt);
+            reflection = mix(reflection, reflection * vec3(0.92, 0.96, 1.0), 0.18);
+            wet = mix(wet, reflection, fresnel * clamp(uIntensity * 0.38, 0.0, 0.55) * distortAmt);
 
             vec3 halfVec    = normalize(mainLight + viewDir);
             float NdotH     = max(dot(normal, halfVec), 0.0);
-            float edgeSpec  = clamp(edgeWipe + waveMask, 0.0, 1.0) * clearFade;
-            float specSharp = pow(NdotH, 200.0) * 1.8 * edgeSpec;
-            float specBroad = pow(NdotH, 32.0)  * 0.20 * edgeSpec;
-            float rim = pow(1.0 - cosTheta, 3.0) * edgeWipe * 0.45;
+            float wetSpec   = clamp(grooveMask * 0.65 + waveMask * 0.9 + edgeWipe * 0.5, 0.0, 1.0);
+            float specSharp = pow(NdotH, 180.0) * 2.0 * wetSpec;
+            float specBroad = pow(NdotH, 28.0)  * 0.24 * wetSpec;
+            float rim = pow(1.0 - cosTheta, 3.0) * (edgeWipe * 0.55 + waveMask * 0.25);
             wet += vec3(specSharp + specBroad + rim) * uIntensity;
-            float causticMask = edgeWipe * smoothstep(0.01, 0.06, abs(lap)) * 0.35
-                              + waveMask * smoothstep(0.02, 0.08, abs(waveOnly)) * 0.40;
-            wet += vec3(0.95, 0.98, 1.0) * causticMask * uIntensity * 0.22 * clearFade;
+            float causticMask = grooveMask * smoothstep(0.01, 0.06, abs(lap)) * 0.28
+                              + waveMask * smoothstep(0.02, 0.08, abs(waveOnly)) * 0.42;
+            wet += vec3(0.95, 0.98, 1.0) * causticMask * uIntensity * 0.24;
 
-            // Crystal branch kept but UI defaults to liquid (mode=0)
+            // Crystal branch kept; UI stays liquid (mode=0)
             if (isCrystal > 0.5) {
                 float steps = 18.0;
                 vec2 facetGrad = floor(grad * steps) / steps;
-                vec2 offset    = facetGrad * 0.22 * uIntensity * aspect * clearFade;
-                wet = mix(sampleCam(camUv, offset).rgb, clearBase, wipeCore * 0.85);
+                vec2 offset    = facetGrad * 0.26 * uIntensity * aspect;
+                wet = mix(sampleCam(camUv, offset).rgb, clearBase, seeThru * 0.35);
                 float edgeH = length(facetGrad);
-                wet += vec3(0.75, 0.90, 1.0) * clamp(edgeH, 0.0, 1.0) * gradLen * uIntensity * 1.6 * clearFade;
-                wet += abs(waveOnly) * grooveEdge * vec3(0.4, 0.6, 0.9) * 0.28;
+                wet += vec3(0.75, 0.90, 1.0) * clamp(edgeH, 0.0, 1.0) * gradLen * uIntensity * 2.0;
+                wet += abs(waveOnly) * edgeWipe * vec3(0.4, 0.6, 0.9) * 0.30;
             }
 
             // Build overlay mask above photo
@@ -526,15 +529,15 @@
             if (maskIceM  > 0.5) overlay = maskIce(clearBase, camUv, uv, texel, aspect, grad);
             if (maskBeadM > 0.5) overlay = maskBeads(clearBase, camUv, uv, texel, aspect);
 
-            // Soft wet rim at mask/wipe boundary; wipe interior stays clearWet
-            vec3 clearWet = mix(wet, clearBase, wipeCore * 0.92);
-            vec3 wetRim = mix(overlay, clearWet, 0.70) + abs(waveOnly) * vec3(0.35, 0.55, 0.8) * edgeWipe * 0.45;
-            wetRim += vec3(0.5, 0.7, 0.95) * edgeWipe * (0.06 + abs(sin(uTime * 5.5 + grooveMask * 28.0)) * 0.08) * clearFade;
+            // Living wet stroke through mask — still animated, just clearer
+            vec3 livingWet = wet;
+            vec3 wetRim = mix(overlay, livingWet, 0.72) + abs(waveOnly) * vec3(0.35, 0.55, 0.8) * edgeWipe * 0.48;
+            wetRim += vec3(0.5, 0.7, 0.95) * edgeWipe * (0.07 + abs(sin(uTime * 5.5 + grooveMask * 28.0)) * 0.09);
 
-            vec3 color = clearWet;
+            vec3 color = livingWet;
             if (maskNone < 0.5) {
-                color = mix(overlay, clearWet, wipe);
-                color = mix(color, wetRim, clamp(edgeWipe * 0.85 + waveMask * edgeWipe * 0.6, 0.0, 0.85));
+                color = mix(overlay, livingWet, wipe);
+                color = mix(color, wetRim, clamp(edgeWipe * 0.85 + waveMask * edgeWipe * 0.65, 0.0, 0.9));
             }
 
             // Keep compiler happy with isLiquid
