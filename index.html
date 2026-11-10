@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: right-index-tracking -->
+    <!-- build: smooth-water-16bit -->
     <style>
         * {
             margin: 0;
@@ -542,11 +542,14 @@
         uniform float uHardness; // 0 soft gradual sink → 1 hard rim
         varying vec2 vUv;
 
-        float decode(float e) { return (e - 0.5) * 5.0; }
-        float encode(float h) { return clamp(h * 0.2 + 0.5, 0.0, 1.0); }
+        float decode(vec4 e) { return (dot(e.rg, vec2(65280.0, 255.0)) - 32768.0) * (5.0 / 65535.0); }
+        vec2 encode(float h) {
+            float value = floor(clamp(h * (65535.0 / 5.0) + 32768.0, 0.0, 65535.0) + 0.5);
+            return vec2(floor(value / 256.0), mod(value, 256.0)) / 255.0;
+        }
 
         void main() {
-            float prev = decode(texture2D(uPrevDent, vUv).r);
+            float prev = decode(texture2D(uPrevDent, vUv));
             float outH = prev;
             if (uStamp > 0.5) {
                 vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
@@ -587,7 +590,7 @@
                 float carved = -uDepth * brush;
                 outH = min(prev, carved);
             }
-            gl_FragColor = vec4(encode(outH), 0.0, 0.0, 1.0);
+            gl_FragColor = vec4(encode(outH), 0.0, 1.0);
         }
     </script>
 
@@ -607,22 +610,25 @@
         uniform float uOrigWave; // 1 = 原版拖动波纹, 0 = 柔和
         varying vec2 vUv;
 
-        float decode(float e) { return (e - 0.5) * 5.0; }
-        float encode(float h) { return clamp(h * 0.2 + 0.5, 0.0, 1.0); }
+        float decode(vec4 e) { return (dot(e.rg, vec2(65280.0, 255.0)) - 32768.0) * (5.0 / 65535.0); }
+        vec2 encode(float h) {
+            float value = floor(clamp(h * (65535.0 / 5.0) + 32768.0, 0.0, 65535.0) + 0.5);
+            return vec2(floor(value / 256.0), mod(value, 256.0)) / 255.0;
+        }
 
         void main() {
             vec2 texel = 1.0 / uResolution;
             vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
 
-            float p10 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x, 0.0)).r);
-            float p12 = decode(texture2D(sampleCurr, vUv + vec2( texel.x, 0.0)).r);
-            float p01 = decode(texture2D(sampleCurr, vUv + vec2(0.0, -texel.y)).r);
-            float p21 = decode(texture2D(sampleCurr, vUv + vec2(0.0,  texel.y)).r);
-            float p00 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x, -texel.y)).r);
-            float p20 = decode(texture2D(sampleCurr, vUv + vec2( texel.x, -texel.y)).r);
-            float p02 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x,  texel.y)).r);
-            float p22 = decode(texture2D(sampleCurr, vUv + vec2( texel.x,  texel.y)).r);
-            float prev = decode(texture2D(samplePrev, vUv).r);
+            float p10 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x, 0.0)));
+            float p12 = decode(texture2D(sampleCurr, vUv + vec2( texel.x, 0.0)));
+            float p01 = decode(texture2D(sampleCurr, vUv + vec2(0.0, -texel.y)));
+            float p21 = decode(texture2D(sampleCurr, vUv + vec2(0.0,  texel.y)));
+            float p00 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x, -texel.y)));
+            float p20 = decode(texture2D(sampleCurr, vUv + vec2( texel.x, -texel.y)));
+            float p02 = decode(texture2D(sampleCurr, vUv + vec2(-texel.x,  texel.y)));
+            float p22 = decode(texture2D(sampleCurr, vUv + vec2( texel.x,  texel.y)));
+            float prev = decode(texture2D(samplePrev, vUv));
 
             // Classic height-field wave: laplacian spreads disturbances outward
             float avg = (p10 + p12 + p01 + p21) * 0.2 + (p00 + p20 + p02 + p22) * 0.05;
@@ -636,7 +642,7 @@
             // Ambient micro-ripple (original Reality Distorter) — only in 原版波纹
             if (uOrigWave > 0.5) {
                 float noise = fract(sin(dot(vUv + uTime * 0.07, vec2(12.9898, 78.233))) * 43758.5453);
-                val += (noise - 0.5) * 0.0012 * uIntensity;
+                val += (noise - 0.5) * 0.00008 * uIntensity;
             }
 
             // Tip inject — 原版 = bak capsule splash; 柔和 = gentler blob+crest
@@ -670,7 +676,7 @@
                 }
             }
 
-            gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 0.0, 1.0);
+            gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 1.0);
         }
     </script>
 
@@ -696,7 +702,7 @@
         uniform float uEdgeRainbow;   // 1 = prismatic ceiling-water edge
         varying vec2 vUv;
 
-        float decode(float e) { return (e - 0.5) * 5.0; }
+        float decode(vec4 e) { return (dot(e.rg, vec2(65280.0, 255.0)) - 32768.0) * (5.0 / 65535.0); }
 
         vec4 sampleCam(vec2 camUv, vec2 offset) {
             return texture2D(uCamera, vec2(
@@ -705,7 +711,7 @@
         }
 
         float sampleH(vec2 uv) {
-            return decode(texture2D(uDent, uv).r) + decode(texture2D(uWave, uv).r);
+            return decode(texture2D(uDent, uv)) + decode(texture2D(uWave, uv));
         }
 
         float hash21(vec2 p) {
@@ -875,8 +881,8 @@
 
             vec2 uv = vUv;
             float data = sampleH(uv);
-            float dentOnly = decode(texture2D(uDent, uv).r);
-            float waveOnly = decode(texture2D(uWave, uv).r);
+            float dentOnly = decode(texture2D(uDent, uv));
+            float waveOnly = decode(texture2D(uWave, uv));
 
             float tl = sampleH(uv + vec2(-texel.x, -texel.y));
             float tc = sampleH(uv + vec2( 0.0,     -texel.y));
@@ -1072,7 +1078,7 @@
     <script id="fs-clear" type="x-shader/x-fragment">
         precision highp float;
         void main() {
-            gl_FragColor = vec4(0.5, 0.0, 0.0, 1.0);
+            gl_FragColor = vec4(128.0 / 255.0, 0.0, 0.0, 1.0);
         }
     </script>
 
@@ -1444,6 +1450,8 @@
             gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
             buffers.quad = vbo;
 
+            // Dithering corrupts packed height channels in RGBA8 simulation targets.
+            gl.disable(gl.DITHER);
             resize();
             window.addEventListener('resize', resize);
         }
@@ -1464,12 +1472,21 @@
         }
 
         function resize() {
-            width = canvas.width = window.innerWidth;
-            height = canvas.height = window.innerHeight;
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 2,
+                Math.sqrt(4000000 / (window.innerWidth * window.innerHeight)));
+            width = canvas.width = Math.max(2, Math.round(window.innerWidth * pixelRatio));
+            height = canvas.height = Math.max(2, Math.round(window.innerHeight * pixelRatio));
             gl.viewport(0, 0, width, height);
 
-            simW = Math.max(2, Math.floor(width / 2));
-            simH = Math.max(2, Math.floor(height / 2));
+            // Keep wave speed stable across display pixel densities.
+            simW = Math.max(2, Math.floor(window.innerWidth / 2));
+            simH = Math.max(2, Math.floor(window.innerHeight / 2));
+            for (const fbo of [waveFboA, waveFboB, waveFboC, dentFboA, dentFboB]) {
+                if (fbo) gl.deleteFramebuffer(fbo);
+            }
+            for (const tex of [waveTexA, waveTexB, waveTexC, dentTexA, dentTexB]) {
+                if (tex) gl.deleteTexture(tex);
+            }
 
             waveTexA = createTexture(gl, simW, simH);
             waveFboA = createFBO(gl, waveTexA);
@@ -1678,7 +1695,7 @@
             gl.bindTexture(gl.TEXTURE_2D, getDentRead().tex);
             gl.uniform1i(gl.getUniformLocation(programs.render, 'uDent'), 2);
 
-            gl.uniform2f(gl.getUniformLocation(programs.render, 'uResolution'), width, height);
+            gl.uniform2f(gl.getUniformLocation(programs.render, 'uResolution'), window.innerWidth, window.innerHeight);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMode'), mode);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uMask'), maskMode);
             gl.uniform1f(gl.getUniformLocation(programs.render, 'uTime'), time * 0.001);
