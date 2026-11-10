@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: round-fine-brush -->
+    <!-- build: independent-wave-radius -->
     <style>
         * {
             margin: 0;
@@ -459,6 +459,10 @@
         <div class="slider-row">
             <label for="radius">笔刷大小</label>
             <input type="range" id="radius" min="0.05" max="3.5" step="0.01" value="1.0">
+        </div>
+        <div class="slider-row">
+            <label for="wave-radius">波纹大小</label>
+            <input type="range" id="wave-radius" min="0.25" max="3.5" step="0.05" value="1.0">
         </div>
         <div class="slider-row">
             <label for="blur">模糊程度</label>
@@ -1071,6 +1075,7 @@
         let maskMode = 1; // default 水雾 so wipe-through-clear is obvious
         let intensity = 1.5; // 波纹强度 — original bak default
         let radiusMult = 1.0; // 笔刷大小
+        let waveRadiusMult = 1.0; // 波纹大小，独立于笔刷
         let damping = 0.990; // 波纹衰减 — higher lasts longer after lift
         let blurAmount = 0.35; // 模糊程度
         let edgeHardness = 0.40; // 边缘硬度 0 soft gradual → 1 hard rim
@@ -1555,7 +1560,7 @@
 
         function strokeParamsFromPressure(pressure) {
             // Pressure affects brush width + carve depth lightly.
-            // Wave ring size comes from radiusMult / physics floor — NOT stroke depth.
+            // Pressure changes brush width; wave size has its own control.
             let p = (typeof pressure === 'number' && pressure > 0) ? Math.min(1, Math.max(0.08, pressure)) : 0.55;
             const rad = radiusMult * (0.40 + p * 0.85);       // 笔刷大小 × 压感
             const inten = intensity;                          // 波纹强度 independent of dent
@@ -1645,7 +1650,7 @@
             gl.uniform3f(gl.getUniformLocation(programs.physics, 'uPrevIndex'), prevIndexTip.x, prevIndexTip.y, prevIndexTip.active);
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uTime'), time * 0.001);
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uIntensity'), intensity);
-            gl.uniform1f(gl.getUniformLocation(programs.physics, 'uRadius'), radiusMult);
+            gl.uniform1f(gl.getUniformLocation(programs.physics, 'uRadius'), waveRadiusMult);
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uDamping'), damping);
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uOrigWave'), origWave);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1824,6 +1829,9 @@
         });
         document.getElementById('radius').addEventListener('input', (e) => {
             radiusMult = parseFloat(e.target.value);
+        });
+        document.getElementById('wave-radius').addEventListener('input', (e) => {
+            waveRadiusMult = parseFloat(e.target.value);
         });
         document.getElementById('damping').addEventListener('input', (e) => {
             damping = parseFloat(e.target.value);
