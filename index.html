@@ -664,7 +664,7 @@
                     float baseRadius = 0.038 * uRadius;
                     float force = 0.6 + clamp(vel * 0.012, 0.0, 1.2);
                     float interaction = smoothstep(baseRadius, 0.0, dist) * force;
-                    val += clamp(interaction, 0.0, 2.0) * uIntensity * 0.7;
+                    val += clamp(interaction, 0.0, 2.0) * uIntensity * 0.035;
                 } else {
                     float waveR = max(0.036, 0.040 * uRadius);
                     float force = 0.55 + clamp(vel * 0.012, 0.0, 1.15);
@@ -672,7 +672,7 @@
                     float crest = smoothstep(waveR * 0.55, waveR * 0.95, dist)
                                 * (1.0 - smoothstep(waveR * 1.05, waveR * 1.55, dist));
                     float impulse = blob * 1.0 + crest * 0.45;
-                    val += clamp(impulse * force, 0.0, 2.2) * clamp(uIntensity, 0.2, 2.5) * 0.55;
+                    val += clamp(impulse * force, 0.0, 2.2) * clamp(uIntensity, 0.2, 2.5) * 0.028;
                 }
             }
 
