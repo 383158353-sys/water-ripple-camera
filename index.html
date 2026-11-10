@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: two-right-hands -->
+    <!-- build: reconnect-and-lift -->
     <style>
         * {
             margin: 0;
@@ -1206,12 +1206,20 @@
                 tip: { x: 0, y: 0, active: 0 },
                 prev: { x: 0, y: 0, active: 0 },
                 target: { x: 0, y: 0 },
+                anchor: { x: 0, y: 0 },
                 sampleAt: 0, stroke: null, cursor
             };
         });
         let lastRenderAt = 0;
-        const TIP_HOLD_MS = 280;
+        const TIP_HOLD_MS = 160;
+        const RECONNECT_MS = 900;
         let fingerCursorEl = null;
+
+        function pauseHand(track) {
+            track.tip.active = 0;
+            track.prev.active = 0;
+            track.cursor.style.display = 'none';
+        }
 
         function stopHand(track) {
             track.tip.active = 0;
@@ -1224,26 +1232,31 @@
             if (!fingerGestureEnabled || pointerDrawActive) return;
             const now = performance.now();
             for (const track of handTracks) {
-                if (now - track.sampleAt > TIP_HOLD_MS) stopHand(track);
+                if (now - track.sampleAt > RECONNECT_MS) stopHand(track);
             }
             const candidates = [];
             for (let i = 0; i < (results.multiHandedness || []).length; i++) {
                 if (results.multiHandedness[i].label !== 'Right') continue;
                 const hand = results.multiHandLandmarks[i];
                 const tip = tipFromHand(hand);
-                const continuing = handTracks.some(track => track.tip.active &&
-                    Math.hypot(track.target.x - tip.x, track.target.y - tip.y) < 0.20);
+                const anchor = mapLandmarkToScreen(hand[5]);
+                const continuing = handTracks.some(track => (track.tip.active || track.stroke) &&
+                    Math.hypot(track.anchor.x - anchor.x, track.anchor.y - anchor.y) < 0.20);
                 const world = results.multiHandWorldLandmarks?.[i];
-                if (isIndexExtended(world || hand, world ? 1 : video.videoHeight / video.videoWidth, continuing)) {
-                    candidates.push(tip);
-                }
+                const palmHeight = Math.hypot(hand[9].x - hand[0].x, hand[9].y - hand[0].y);
+                const raised = hand[8].y < hand[5].y + palmHeight * 0.15 && hand[8].y < 0.95;
+                candidates.push({
+                    ...tip, anchor,
+                    drawing: raised && isIndexExtended(world || hand,
+                        world ? 1 : video.videoHeight / video.videoWidth, continuing)
+                });
             }
             // Match by position, since MediaPipe may reorder hands every frame.
             const pairs = [];
             for (const track of handTracks) {
-                if (!track.tip.active) continue;
+                if (!track.tip.active && !track.stroke) continue;
                 for (const tip of candidates) {
-                    pairs.push({ track, tip, distance: Math.hypot(track.target.x - tip.x, track.target.y - tip.y) });
+                    pairs.push({ track, tip, distance: Math.hypot(track.anchor.x - tip.anchor.x, track.anchor.y - tip.anchor.y) });
                 }
             }
             pairs.sort((a, b) => a.distance - b.distance);
@@ -1257,16 +1270,25 @@
             }
             for (const tip of candidates) {
                 if (used.has(tip)) continue;
-                const track = handTracks.find(track => !track.tip.active && !assigned.has(track));
+                const track = handTracks.find(track => !track.tip.active && !track.stroke && !assigned.has(track));
                 if (track) assigned.set(track, tip);
             }
+            for (const track of handTracks) {
+                if (!assigned.has(track)) pauseHand(track);
+            }
             for (const [track, tip] of assigned) {
-                if (!track.tip.active) {
+                if (!tip.drawing) {
+                    stopHand(track);
+                    continue;
+                }
+                // Keep the previous endpoint through a brief missed detection.
+                if (!track.tip.active && !track.stroke) {
                     track.tip.x = tip.x;
                     track.tip.y = tip.y;
                     track.prev.active = 0;
                 }
                 track.target = tip;
+                track.anchor = tip.anchor;
                 track.sampleAt = now;
                 track.tip.active = 1;
             }
@@ -1303,10 +1325,11 @@
             const dt = Math.min(Math.max((time - lastRenderAt) / 1000, 0), 0.05);
             lastRenderAt = time;
             for (const track of handTracks) {
-                if (pointerDrawActive || !fingerGestureEnabled || time - track.sampleAt > TIP_HOLD_MS) {
+                if (pointerDrawActive || !fingerGestureEnabled || time - track.sampleAt > RECONNECT_MS) {
                     stopHand(track);
                     continue;
                 }
+                if (time - track.sampleAt > TIP_HOLD_MS) pauseHand(track);
                 if (!track.tip.active) continue;
                 const dx = track.target.x - track.tip.x;
                 const dy = track.target.y - track.tip.y;
@@ -1356,7 +1379,7 @@
                     async function detectHands() {
                         let retryDelay = 0;
                         try {
-                            if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+                            if (fingerGestureEnabled && !pointerDrawActive && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
                                 lastVideoTime = video.currentTime;
                                 await hands.send({ image: video });
                                 trackingFailed = false;
@@ -1364,8 +1387,8 @@
                         } catch (error) {
                             if (!trackingFailed) console.warn('Hand tracking failed', error);
                             trackingFailed = true;
-                            handTracks.forEach(stopHand);
-                            retryDelay = 500;
+                            handTracks.forEach(pauseHand);
+                            retryDelay = 200;
                         } finally {
                             if (retryDelay) setTimeout(detectHands, retryDelay);
                             else requestAnimationFrame(detectHands);
@@ -1430,8 +1453,8 @@
         }
 
         function resize() {
-            const pixelRatio = Math.min(window.devicePixelRatio || 1, 2,
-                Math.sqrt(4000000 / (window.innerWidth * window.innerHeight)));
+            const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5,
+                Math.sqrt(1800000 / (window.innerWidth * window.innerHeight)));
             width = canvas.width = Math.max(2, Math.round(window.innerWidth * pixelRatio));
             height = canvas.height = Math.max(2, Math.round(window.innerHeight * pixelRatio));
             gl.viewport(0, 0, width, height);
@@ -1453,8 +1476,10 @@
             waveTexC = createTexture(gl, simW, simH);
             waveFboC = createFBO(gl, waveTexC);
 
-            dentW = width;
-            dentH = height;
+            // Keep brush passes inexpensive while retaining subpixel edge feathering.
+            const dentScale = Math.min(1, Math.sqrt(1000000 / (width * height)));
+            dentW = Math.max(2, Math.round(width * dentScale));
+            dentH = Math.max(2, Math.round(height * dentScale));
             dentTexA = createTexture(gl, dentW, dentH);
             dentFboA = createFBO(gl, dentTexA);
             dentTexB = createTexture(gl, dentW, dentH);
