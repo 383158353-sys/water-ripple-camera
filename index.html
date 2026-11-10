@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: smooth-water-16bit -->
+    <!-- build: round-fine-brush -->
     <style>
         * {
             margin: 0;
@@ -458,7 +458,7 @@
         </div>
         <div class="slider-row">
             <label for="radius">笔刷大小</label>
-            <input type="range" id="radius" min="0.25" max="3.5" step="0.05" value="1.0">
+            <input type="range" id="radius" min="0.05" max="3.5" step="0.01" value="1.0">
         </div>
         <div class="slider-row">
             <label for="blur">模糊程度</label>
@@ -558,34 +558,12 @@
                 float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
                 float dist = length(pa - ba * h);
 
-                float r = 0.022 * uRadius;
+                float r = max(0.022 * uRadius, 0.65 / uResolution.y);
                 float hard = clamp(uHardness, 0.0, 1.0);
-
-                // 边缘硬度 drives PERSISTENT dent scar rim (not wave ring):
-                // soft = wide gradual sink bowl; hard = sharp carved scar walls.
-                float outerMul = mix(2.55, 1.05, hard); // soft: far soft start
-                float innerMul = mix(0.02, 0.58, hard); // hard: full depth arrives sooner
-                float brush = smoothstep(r * outerMul, r * innerMul, dist);
-
-                // Soft: broad gaussian bowl; hard: concentrated carve core
-                float coreSpread = mix(3.40, 0.48, hard);
-                float core = exp(-(dist * dist) / max(coreSpread * r * r, 1e-6));
-
-                // Soft: no lip; hard: carved ridge at scar edge
-                float lipOuter = mix(1.70, 1.32, hard);
-                float lipMid   = mix(1.05, 0.90, hard);
-                float lipInner = mix(0.60, 0.30, hard);
-                float lip = smoothstep(r * lipOuter, r * lipMid, dist)
-                          * (1.0 - smoothstep(r * lipMid, r * lipInner, dist));
-                float lipAmt = mix(0.0, 0.28, hard);
-
-                float softW = mix(1.00, 0.42, hard);
-                float coreW = mix(0.62, 1.00, hard);
-                brush = clamp(brush * softW + core * coreW + lip * lipAmt, 0.0, 1.0);
-
-                // Soft flatter bowl; hard steeper scar walls
-                float shapePow = mix(0.48, 1.70, hard);
-                brush = pow(max(brush, 0.0), shapePow);
+                // Capsule distance gives circular caps and round joins.
+                // Feather at least one texel so even the thinnest line is antialiased.
+                float feather = max(r * mix(1.2, 0.12, hard), 1.0 / uResolution.y);
+                float brush = 1.0 - smoothstep(max(0.0, r - feather), r + feather, dist);
 
                 float carved = -uDepth * brush;
                 outH = min(prev, carved);
@@ -666,7 +644,7 @@
                     float interaction = smoothstep(baseRadius, 0.0, dist) * force;
                     val += clamp(interaction, 0.0, 2.0) * uIntensity * 0.035;
                 } else {
-                    float waveR = max(0.036, 0.040 * uRadius);
+                    float waveR = max(1.0 / uResolution.y, 0.040 * uRadius);
                     float force = 0.55 + clamp(vel * 0.012, 0.0, 1.15);
                     float blob = smoothstep(waveR, 0.0, dist);
                     float crest = smoothstep(waveR * 0.55, waveR * 0.95, dist)
@@ -1088,7 +1066,7 @@
         const logEl = document.getElementById('error-log');
         const loadingEl = document.getElementById('loading');
 
-        let width, height, simW, simH;
+        let width, height, simW, simH, dentW, dentH;
         let mode = 0; // liquid only (crystal UI removed)
         let maskMode = 1; // default 水雾 so wipe-through-clear is obvious
         let intensity = 1.5; // 波纹强度 — original bak default
@@ -1237,7 +1215,7 @@
         function updateFingerCursor(active, x, y) {
             if (!fingerCursorEl) fingerCursorEl = document.getElementById('finger-cursor');
             if (!fingerCursorEl) return;
-            if (!fingerGestureEnabled || !active) {
+            if (!active || (!fingerGestureEnabled && !pointerDrawActive)) {
                 fingerCursorEl.style.display = 'none';
                 return;
             }
@@ -1344,7 +1322,6 @@
                             : null;
 
                         if (pointerDrawActive) {
-                            updateFingerCursor(false, 0, 0);
                             return;
                         }
 
@@ -1405,8 +1382,10 @@
                             tipSmooth.init = false;
                             tipLostSince = 0;
                             indexTip.active = 0;
-                            updateFingerCursor(false, 0, 0);
-                            if (!pointerDrawActive) endCurrentStroke();
+                            if (!pointerDrawActive) {
+                                updateFingerCursor(false, 0, 0);
+                                endCurrentStroke();
+                            }
                             retryDelay = 500;
                         } finally {
                             if (retryDelay) setTimeout(detectHands, retryDelay);
@@ -1463,9 +1442,9 @@
             gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
         }
 
-        function clearTarget(fbo, tex) {
+        function clearTarget(fbo, tex, targetW = simW, targetH = simH) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-            gl.viewport(0, 0, simW, simH);
+            gl.viewport(0, 0, targetW, targetH);
             gl.useProgram(programs.clear);
             bindQuad(programs.clear);
             gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1495,17 +1474,19 @@
             waveTexC = createTexture(gl, simW, simH);
             waveFboC = createFBO(gl, waveTexC);
 
-            dentTexA = createTexture(gl, simW, simH);
+            dentW = width;
+            dentH = height;
+            dentTexA = createTexture(gl, dentW, dentH);
             dentFboA = createFBO(gl, dentTexA);
-            dentTexB = createTexture(gl, simW, simH);
+            dentTexB = createTexture(gl, dentW, dentH);
             dentFboB = createFBO(gl, dentTexB);
             dentReadIsA = true;
 
             clearTarget(waveFboA, waveTexA);
             clearTarget(waveFboB, waveTexB);
             clearTarget(waveFboC, waveTexC);
-            clearTarget(dentFboA, dentTexA);
-            clearTarget(dentFboB, dentTexB);
+            clearTarget(dentFboA, dentTexA, dentW, dentH);
+            clearTarget(dentFboB, dentTexB, dentW, dentH);
 
             // Restored persistent strokes after resize
             restampAllStrokes();
@@ -1528,14 +1509,14 @@
             const hrd = (typeof hard === 'number') ? hard : edgeHardness;
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, write.fbo);
-            gl.viewport(0, 0, simW, simH);
+            gl.viewport(0, 0, dentW, dentH);
             gl.useProgram(programs.dent);
             bindQuad(programs.dent);
 
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, read.tex);
             gl.uniform1i(gl.getUniformLocation(programs.dent, 'uPrevDent'), 0);
-            gl.uniform2f(gl.getUniformLocation(programs.dent, 'uResolution'), simW, simH);
+            gl.uniform2f(gl.getUniformLocation(programs.dent, 'uResolution'), dentW, dentH);
             gl.uniform2f(gl.getUniformLocation(programs.dent, 'uBrushA'), A[0], A[1]);
             gl.uniform2f(gl.getUniformLocation(programs.dent, 'uBrushB'), B[0], B[1]);
             gl.uniform1f(gl.getUniformLocation(programs.dent, 'uRadius'), rad);
@@ -1547,8 +1528,8 @@
         }
 
         function clearDentField() {
-            clearTarget(dentFboA, dentTexA);
-            clearTarget(dentFboB, dentTexB);
+            clearTarget(dentFboA, dentTexA, dentW, dentH);
+            clearTarget(dentFboB, dentTexB, dentW, dentH);
             dentReadIsA = true;
         }
 
@@ -1786,6 +1767,7 @@
             // Co-locate prev/curr for a clean radial splash on contact
             prevIndexTip.x = p.x; prevIndexTip.y = p.y; prevIndexTip.active = 1;
             indexTip.x = p.x; indexTip.y = p.y; indexTip.active = 1;
+            updateFingerCursor(true, p.x, p.y);
             onIndexDraw(p.x, p.y, readPressure(e, p));
             e.preventDefault();
         }
@@ -1796,6 +1778,7 @@
             const pr = readPressure(e, p);
             lastPtr = { x: p.x, y: p.y, t: performance.now() };
             indexTip.x = p.x; indexTip.y = p.y; indexTip.active = 1;
+            updateFingerCursor(true, p.x, p.y);
             onIndexDraw(p.x, p.y, pr);
             e.preventDefault();
         }
@@ -1803,6 +1786,7 @@
         function endPointerStroke(e) {
             if (!pointerDown) return;
             if (e && activePointerId != null && e.pointerId !== activePointerId) return;
+            updateFingerCursor(false, 0, 0);
             pointerDown = false;
             pointerDrawActive = false;
             activePointerId = null;
