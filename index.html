@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: independent-wave-radius -->
+    <!-- build: smooth-hand-follow -->
     <style>
         * {
             margin: 0;
@@ -1193,13 +1193,11 @@
         let currentFacingMode = 'user';
         let videoStream = null;
         let handsInstance = null;
-        let tipSmooth = { x: 0.5, y: 0.5, vx: 0, vy: 0, init: false };
+        let tipSmooth = { x: 0.5, y: 0.5, init: false };
+        let lastHandSampleAt = 0;
+        let lastRenderAt = 0;
         let tipLostSince = 0;
         const TIP_HOLD_MS = 280; // keep stroke alive through brief landmark drops
-        // Higher lerp = less lag, tip glued to finger while writing
-        const TIP_LERP_MIN = 0.58;
-        const TIP_LERP_MAX = 0.98;
-        const JUMP_SNAP = 0.42; // only reject truly wild outliers (fewer false rejects)
         let fingerCursorEl = null;
 
         function mirrorPreview() {
@@ -1229,60 +1227,29 @@
             fingerCursorEl.style.top = (y * 100) + 'vh';
         }
 
-        function smoothTip(raw) {
-            if (!tipSmooth.init) {
-                tipSmooth.x = raw.x;
-                tipSmooth.y = raw.y;
-                tipSmooth.vx = 0;
-                tipSmooth.vy = 0;
-                tipSmooth.init = true;
-                return { x: raw.x, y: raw.y };
-            }
-            const dx = raw.x - tipSmooth.x;
-            const dy = raw.y - tipSmooth.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-
-            // One-frame wild outlier: keep last point (don't freeze for many frames)
-            if (dist > JUMP_SNAP) {
-                const predX = tipSmooth.x + tipSmooth.vx;
-                const predY = tipSmooth.y + tipSmooth.vy;
-                // Only hold if also far from velocity prediction
-                if (Math.hypot(raw.x - predX, raw.y - predY) > JUMP_SNAP * 1.05) {
-                    return { x: tipSmooth.x, y: tipSmooth.y };
-                }
-            }
-
-            // Speed-adaptive lerp: writing strokes stay glued to the fingertip
-            const lerp = Math.min(TIP_LERP_MAX, TIP_LERP_MIN + dist * 8.0);
-            const nx = tipSmooth.x + dx * lerp;
-            const ny = tipSmooth.y + dy * lerp;
-            tipSmooth.vx = nx - tipSmooth.x;
-            tipSmooth.vy = ny - tipSmooth.y;
-            tipSmooth.x = nx;
-            tipSmooth.y = ny;
-            return { x: tipSmooth.x, y: tipSmooth.y };
-        }
-
-        // Fill gaps so dent stroke stays continuous along the finger path
-        function strokeAlongPath(x, y, pressure) {
-            if (!currentStroke || !currentStroke.points.length) {
-                onIndexDraw(x, y, pressure);
+        function advanceHandTip(time) {
+            const dt = Math.min(Math.max((time - lastRenderAt) / 1000, 0), 0.05);
+            lastRenderAt = time;
+            if (pointerDrawActive || !fingerGestureEnabled || !indexTip.active) return;
+            if (time - lastHandSampleAt > TIP_HOLD_MS) {
+                indexTip.active = 0;
+                tipSmooth.init = false;
+                updateFingerCursor(false, 0, 0);
+                endCurrentStroke();
                 return;
             }
-            const last = currentStroke.points[currentStroke.points.length - 1];
-            const dx = x - last.x;
-            const dy = y - last.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            const step = 0.007; // denser stamps while writing fast
-            if (dist <= step * 1.2) {
-                onIndexDraw(x, y, pressure);
-                return;
-            }
-            const n = Math.min(24, Math.ceil(dist / step));
-            for (let i = 1; i <= n; i++) {
-                const t = i / n;
-                onIndexDraw(last.x + dx * t, last.y + dy * t, pressure);
-            }
+            const dx = tipSmooth.x - indexTip.x;
+            const dy = tipSmooth.y - indexTip.y;
+            const distance = Math.hypot(dx, dy);
+            // A time-based filter smooths low-rate camera samples at display rate.
+            // Faster motion catches up quickly; small movements receive more filtering.
+            const followRate = 18 + Math.min(distance * 180, 32);
+            const alpha = 1 - Math.exp(-followRate * dt);
+            indexTip.x += dx * alpha;
+            indexTip.y += dy * alpha;
+            updateFingerCursor(true, indexTip.x, indexTip.y);
+            // The capsule shader covers the entire segment in one pass.
+            onIndexDraw(indexTip.x, indexTip.y, 0.55);
         }
 
         async function initCamera() {
@@ -1342,15 +1309,20 @@
 
                         if (rightIndex) {
                             tipLostSince = 0;
-                            const sm = smoothTip(rightIndex);
-                            indexTip.x = sm.x;
-                            indexTip.y = sm.y;
+                            const now = performance.now();
+                            const gap = now - lastHandSampleAt;
+                            const jump = Math.hypot(rightIndex.x - indexTip.x, rightIndex.y - indexTip.y);
+                            if (!tipSmooth.init || gap > TIP_HOLD_MS || jump > 0.30) {
+                                endCurrentStroke();
+                                indexTip.x = rightIndex.x;
+                                indexTip.y = rightIndex.y;
+                                prevIndexTip.active = 0;
+                            }
+                            tipSmooth.x = rightIndex.x;
+                            tipSmooth.y = rightIndex.y;
+                            tipSmooth.init = true;
+                            lastHandSampleAt = now;
                             indexTip.active = 1;
-                            updateFingerCursor(true, sm.x, sm.y);
-                            // Pressure from tip travel — keeps stroke lively along writing path
-                            const spd = Math.hypot(tipSmooth.vx, tipSmooth.vy);
-                            const pr = Math.max(0.28, Math.min(0.85, 0.62 - spd * 1.8));
-                            strokeAlongPath(sm.x, sm.y, pr);
                         } else if (indexTip.active && tipSmooth.init) {
                             // Brief dropout: hold last tip so writing stroke stays continuous
                             if (!tipLostSince) tipLostSince = performance.now();
@@ -1374,10 +1346,12 @@
                     });
 
                     let trackingFailed = false;
+                    let lastVideoTime = -1;
                     async function detectHands() {
                         let retryDelay = 0;
                         try {
-                            if (video.readyState >= 2) {
+                            if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+                                lastVideoTime = video.currentTime;
                                 await hands.send({ image: video });
                                 trackingFailed = false;
                             }
@@ -1577,7 +1551,7 @@
             }
             const last = currentStroke.points[currentStroke.points.length - 1];
             const dx = x - last.x, dy = y - last.y;
-            if (dx * dx + dy * dy < 0.000018) return; // skip tiny jitter, keep writing path dense
+            if (Math.hypot(dx * window.innerWidth, dy * window.innerHeight) < 0.5) return;
             currentStroke.points.push({ x, y });
             // Update stroke footprint if pressure changes mid-stroke
             currentStroke.radius = sp.rad;
@@ -1620,6 +1594,7 @@
         }
 
         function render(time) {
+            advanceHandTip(time);
             if (video && video.readyState >= 2) {
                 gl.bindTexture(gl.TEXTURE_2D, cameraTex);
                 gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
