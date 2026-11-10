@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>水面交互</title>
-    <!-- build: smooth-hand-follow -->
+    <!-- build: two-right-hands -->
     <style>
         * {
             margin: 0;
@@ -389,7 +389,7 @@
         }
 
 
-        #finger-cursor {
+        .finger-cursor {
             position: absolute;
             width: 14px;
             height: 14px;
@@ -426,7 +426,7 @@
     <div id="loading">初始化中…</div>
     <div id="error-log"></div>
     <div id="hint-cn">凹痕边缘硬度 · 笔触/透光颜色 · 原版拖动波纹</div>
-    <div id="finger-cursor" aria-hidden="true"></div>
+    <div id="finger-cursor" class="finger-cursor" aria-hidden="true"></div>
 
     <div id="top-controls" style="position: absolute; top: 20px; right: 20px; z-index: 20; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; max-width: 70%;">
         <button id="btn-undo" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">撤销</button>
@@ -434,7 +434,7 @@
         <button id="btn-upload" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">上传底图</button>
         <button id="btn-use-cam" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px); display:none;">摄像头底</button>
         <button id="btn-camera" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">切换镜头</button>
-        <button id="btn-finger" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);" title="默认关闭，开启后可用右手食指在画面上绘制">右手食指</button>
+        <button id="btn-finger" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);" title="默认关闭，开启后支持两个人的右手食指同时绘制">右手食指</button>
         <button id="btn-record" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);" title="只录制画布画面，不含界面">录屏</button>
         <button id="btn-hide" class="mode-btn" style="padding: 8px 15px; font-size: 12px; background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);">隐藏界面</button>
         <input id="bg-file" type="file" accept="image/*" style="display:none;">
@@ -583,8 +583,8 @@
         uniform sampler2D sampleCurr;
         uniform sampler2D uDent;
         uniform vec2 uResolution;
-        uniform vec3 uIndex;      // x,y in screen UV (y top-down), z active
-        uniform vec3 uPrevIndex;
+        uniform vec3 uIndex[3];      // x,y in screen UV (y top-down), z active
+        uniform vec3 uPrevIndex[3];
         uniform float uTime;
         uniform float uIntensity;
         uniform float uRadius;
@@ -628,34 +628,37 @@
             }
 
             // Tip inject — 原版 = bak capsule splash; 柔和 = gentler blob+crest
-            if (uIndex.z > 0.5) {
-                vec2 currUV = vec2(uIndex.x, 1.0 - uIndex.y);
-                vec2 prevUV = (uPrevIndex.z > 0.5)
-                    ? vec2(uPrevIndex.x, 1.0 - uPrevIndex.y)
-                    : currUV;
+            for (int tipId = 0; tipId < 3; tipId++) {
+                if (uIndex[tipId].z > 0.5) {
+                    vec2 currUV = vec2(uIndex[tipId].x, 1.0 - uIndex[tipId].y);
+                    vec2 prevUV = (uPrevIndex[tipId].z > 0.5)
+                        ? vec2(uPrevIndex[tipId].x, 1.0 - uPrevIndex[tipId].y)
+                        : currUV;
 
-                // Capsule SDF along the stroke segment (finger through water)
-                vec2 pa = (vUv - prevUV) * aspect;
-                vec2 ba = (currUV - prevUV) * aspect;
-                float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
-                float dist = length(pa - ba * h);
-                float vel = length(ba) * uResolution.y; // pixels of tip travel
+                    // Capsule SDF along the stroke segment (finger through water)
+                    vec2 pa = (vUv - prevUV) * aspect;
+                    vec2 ba = (currUV - prevUV) * aspect;
+                    float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-8), 0.0, 1.0);
+                    float dist = length(pa - ba * h);
+                    float vel = length(ba) * uResolution.y; // pixels of tip travel
 
-                if (uOrigWave > 0.5) {
-                    // Exact original bak tip: soft capsule blob, strong drag splash
-                    float baseRadius = 0.038 * uRadius;
-                    float force = 0.6 + clamp(vel * 0.012, 0.0, 1.2);
-                    float interaction = smoothstep(baseRadius, 0.0, dist) * force;
-                    val += clamp(interaction, 0.0, 2.0) * uIntensity * 0.035;
-                } else {
-                    float waveR = max(1.0 / uResolution.y, 0.040 * uRadius);
-                    float force = 0.55 + clamp(vel * 0.012, 0.0, 1.15);
-                    float blob = smoothstep(waveR, 0.0, dist);
-                    float crest = smoothstep(waveR * 0.55, waveR * 0.95, dist)
-                                * (1.0 - smoothstep(waveR * 1.05, waveR * 1.55, dist));
-                    float impulse = blob * 1.0 + crest * 0.45;
-                    val += clamp(impulse * force, 0.0, 2.2) * clamp(uIntensity, 0.2, 2.5) * 0.028;
+                    if (uOrigWave > 0.5) {
+                        // Exact original bak tip: soft capsule blob, strong drag splash
+                        float baseRadius = 0.038 * uRadius;
+                        float force = 0.6 + clamp(vel * 0.012, 0.0, 1.2);
+                        float interaction = smoothstep(baseRadius, 0.0, dist) * force;
+                        val += clamp(interaction, 0.0, 2.0) * uIntensity * 0.035;
+                    } else {
+                        float waveR = max(1.0 / uResolution.y, 0.040 * uRadius);
+                        float force = 0.55 + clamp(vel * 0.012, 0.0, 1.15);
+                        float blob = smoothstep(waveR, 0.0, dist);
+                        float crest = smoothstep(waveR * 0.55, waveR * 0.95, dist)
+                                    * (1.0 - smoothstep(waveR * 1.05, waveR * 1.55, dist));
+                        float impulse = blob * 1.0 + crest * 0.45;
+                        val += clamp(impulse * force, 0.0, 2.2) * clamp(uIntensity, 0.2, 2.5) * 0.028;
+                    }
                 }
+
             }
 
             gl_FragColor = vec4(encode(clamp(val, -2.4, 2.4)), 0.0, 1.0);
@@ -1100,7 +1103,7 @@
 
         // Stroke memory
         const strokes = []; // { points: [{x,y}], intensity, radius }
-        let currentStroke = null;
+        const pointerTrack = { stroke: null };
 
         function showError(msg) {
             logEl.style.display = 'block';
@@ -1156,13 +1159,13 @@
             return Math.hypot(a.x - b.x, (a.y - b.y) * yScale, a.z - b.z);
         }
 
-        function isIndexExtended(hand, yScale) {
+        function isIndexExtended(hand, yScale, active = false) {
             const [base, middle, distal, tip] = hand.slice(5, 9);
             const length = fingerDistance(base, middle, yScale)
                 + fingerDistance(middle, distal, yScale)
                 + fingerDistance(distal, tip, yScale);
             const reach = fingerDistance(base, tip, yScale);
-            const threshold = indexTip.active ? 0.66 : 0.76;
+            const threshold = active ? 0.66 : 0.76;
             return length > 0 && reach >= length * threshold;
         }
 
@@ -1193,12 +1196,81 @@
         let currentFacingMode = 'user';
         let videoStream = null;
         let handsInstance = null;
-        let tipSmooth = { x: 0.5, y: 0.5, init: false };
-        let lastHandSampleAt = 0;
+        const handTracks = Array.from({ length: 2 }, (_, i) => {
+            const cursor = document.createElement('div');
+            cursor.className = 'finger-cursor';
+            cursor.setAttribute('aria-hidden', 'true');
+            if (i === 1) cursor.style.background = 'rgba(255, 190, 90, 0.65)';
+            document.body.appendChild(cursor);
+            return {
+                tip: { x: 0, y: 0, active: 0 },
+                prev: { x: 0, y: 0, active: 0 },
+                target: { x: 0, y: 0 },
+                sampleAt: 0, stroke: null, cursor
+            };
+        });
         let lastRenderAt = 0;
-        let tipLostSince = 0;
-        const TIP_HOLD_MS = 280; // keep stroke alive through brief landmark drops
+        const TIP_HOLD_MS = 280;
         let fingerCursorEl = null;
+
+        function stopHand(track) {
+            track.tip.active = 0;
+            track.prev.active = 0;
+            track.cursor.style.display = 'none';
+            endCurrentStroke(track);
+        }
+
+        function acceptHandResults(results) {
+            if (!fingerGestureEnabled || pointerDrawActive) return;
+            const now = performance.now();
+            for (const track of handTracks) {
+                if (now - track.sampleAt > TIP_HOLD_MS) stopHand(track);
+            }
+            const candidates = [];
+            for (let i = 0; i < (results.multiHandedness || []).length; i++) {
+                if (results.multiHandedness[i].label !== 'Right') continue;
+                const hand = results.multiHandLandmarks[i];
+                const tip = tipFromHand(hand);
+                const continuing = handTracks.some(track => track.tip.active &&
+                    Math.hypot(track.target.x - tip.x, track.target.y - tip.y) < 0.20);
+                const world = results.multiHandWorldLandmarks?.[i];
+                if (isIndexExtended(world || hand, world ? 1 : video.videoHeight / video.videoWidth, continuing)) {
+                    candidates.push(tip);
+                }
+            }
+            // Match by position, since MediaPipe may reorder hands every frame.
+            const pairs = [];
+            for (const track of handTracks) {
+                if (!track.tip.active) continue;
+                for (const tip of candidates) {
+                    pairs.push({ track, tip, distance: Math.hypot(track.target.x - tip.x, track.target.y - tip.y) });
+                }
+            }
+            pairs.sort((a, b) => a.distance - b.distance);
+            const assigned = new Map();
+            const used = new Set();
+            for (const pair of pairs) {
+                if (pair.distance <= 0.30 && !assigned.has(pair.track) && !used.has(pair.tip)) {
+                    assigned.set(pair.track, pair.tip);
+                    used.add(pair.tip);
+                }
+            }
+            for (const tip of candidates) {
+                if (used.has(tip)) continue;
+                const track = handTracks.find(track => !track.tip.active && !assigned.has(track));
+                if (track) assigned.set(track, tip);
+            }
+            for (const [track, tip] of assigned) {
+                if (!track.tip.active) {
+                    track.tip.x = tip.x;
+                    track.tip.y = tip.y;
+                    track.prev.active = 0;
+                }
+                track.target = tip;
+                track.sampleAt = now;
+                track.tip.active = 1;
+            }
+        }
 
         function mirrorPreview() {
             return currentFacingMode === 'user';
@@ -1207,7 +1279,7 @@
         function applyHandsOptions() {
             if (!handsInstance) return;
             handsInstance.setOptions({
-                maxNumHands: 2,
+                maxNumHands: 4,
                 modelComplexity: 1,
                 minDetectionConfidence: 0.50,
                 minTrackingConfidence: 0.45,
@@ -1230,26 +1302,23 @@
         function advanceHandTip(time) {
             const dt = Math.min(Math.max((time - lastRenderAt) / 1000, 0), 0.05);
             lastRenderAt = time;
-            if (pointerDrawActive || !fingerGestureEnabled || !indexTip.active) return;
-            if (time - lastHandSampleAt > TIP_HOLD_MS) {
-                indexTip.active = 0;
-                tipSmooth.init = false;
-                updateFingerCursor(false, 0, 0);
-                endCurrentStroke();
-                return;
+            for (const track of handTracks) {
+                if (pointerDrawActive || !fingerGestureEnabled || time - track.sampleAt > TIP_HOLD_MS) {
+                    stopHand(track);
+                    continue;
+                }
+                if (!track.tip.active) continue;
+                const dx = track.target.x - track.tip.x;
+                const dy = track.target.y - track.tip.y;
+                const rate = 18 + Math.min(Math.hypot(dx, dy) * 180, 32);
+                const alpha = 1 - Math.exp(-rate * dt);
+                track.tip.x += dx * alpha;
+                track.tip.y += dy * alpha;
+                track.cursor.style.display = 'block';
+                track.cursor.style.left = (track.tip.x * 100) + 'vw';
+                track.cursor.style.top = (track.tip.y * 100) + 'vh';
+                onIndexDraw(track.tip.x, track.tip.y, 0.55, track);
             }
-            const dx = tipSmooth.x - indexTip.x;
-            const dy = tipSmooth.y - indexTip.y;
-            const distance = Math.hypot(dx, dy);
-            // A time-based filter smooths low-rate camera samples at display rate.
-            // Faster motion catches up quickly; small movements receive more filtering.
-            const followRate = 18 + Math.min(distance * 180, 32);
-            const alpha = 1 - Math.exp(-followRate * dt);
-            indexTip.x += dx * alpha;
-            indexTip.y += dy * alpha;
-            updateFingerCursor(true, indexTip.x, indexTip.y);
-            // The capsule shader covers the entire segment in one pass.
-            onIndexDraw(indexTip.x, indexTip.y, 0.55);
         }
 
         async function initCamera() {
@@ -1271,7 +1340,7 @@
                 });
                 video.srcObject = videoStream;
                 await video.play();
-                tipSmooth.init = false;
+                handTracks.forEach(stopHand);
                 applyHandsOptions();
 
                 if (!handsInitialized) {
@@ -1280,70 +1349,7 @@
                     });
                     handsInstance = hands;
                     applyHandsOptions();
-                    hands.onResults((results) => {
-                        // Physics tip history is owned by render(); avoid zeroing velocity here.
-
-                        const rightHandIndex = results.multiHandedness?.findIndex(
-                            hand => hand.label === 'Right'
-                        );
-                        const hand = results.multiHandLandmarks?.[rightHandIndex];
-                        const worldHand = results.multiHandWorldLandmarks?.[rightHandIndex];
-                        const yScale = video.videoHeight / video.videoWidth;
-                        const rightIndex = hand && isIndexExtended(worldHand || hand, worldHand ? 1 : yScale)
-                            ? tipFromHand(hand)
-                            : null;
-
-                        if (pointerDrawActive) {
-                            return;
-                        }
-
-                        // 右手食指关闭时：不把手部 landmark 写成绘制点（触控笔/手指触屏仍可用）
-                        if (!fingerGestureEnabled) {
-                            tipSmooth.init = false;
-                            tipLostSince = 0;
-                            indexTip.active = 0;
-                            updateFingerCursor(false, 0, 0);
-                            endCurrentStroke();
-                            return;
-                        }
-
-                        if (rightIndex) {
-                            tipLostSince = 0;
-                            const now = performance.now();
-                            const gap = now - lastHandSampleAt;
-                            const jump = Math.hypot(rightIndex.x - indexTip.x, rightIndex.y - indexTip.y);
-                            if (!tipSmooth.init || gap > TIP_HOLD_MS || jump > 0.30) {
-                                endCurrentStroke();
-                                indexTip.x = rightIndex.x;
-                                indexTip.y = rightIndex.y;
-                                prevIndexTip.active = 0;
-                            }
-                            tipSmooth.x = rightIndex.x;
-                            tipSmooth.y = rightIndex.y;
-                            tipSmooth.init = true;
-                            lastHandSampleAt = now;
-                            indexTip.active = 1;
-                        } else if (indexTip.active && tipSmooth.init) {
-                            // Brief dropout: hold last tip so writing stroke stays continuous
-                            if (!tipLostSince) tipLostSince = performance.now();
-                            if (performance.now() - tipLostSince < TIP_HOLD_MS) {
-                                indexTip.active = 1;
-                                updateFingerCursor(true, indexTip.x, indexTip.y);
-                            } else {
-                                tipSmooth.init = false;
-                                tipLostSince = 0;
-                                indexTip.active = 0;
-                                updateFingerCursor(false, 0, 0);
-                                endCurrentStroke();
-                            }
-                        } else {
-                            tipSmooth.init = false;
-                            tipLostSince = 0;
-                            indexTip.active = 0;
-                            updateFingerCursor(false, 0, 0);
-                            endCurrentStroke();
-                        }
-                    });
+                    hands.onResults(acceptHandResults);
 
                     let trackingFailed = false;
                     let lastVideoTime = -1;
@@ -1358,13 +1364,7 @@
                         } catch (error) {
                             if (!trackingFailed) console.warn('Hand tracking failed', error);
                             trackingFailed = true;
-                            tipSmooth.init = false;
-                            tipLostSince = 0;
-                            indexTip.active = 0;
-                            if (!pointerDrawActive) {
-                                updateFingerCursor(false, 0, 0);
-                                endCurrentStroke();
-                            }
+                            handTracks.forEach(stopHand);
                             retryDelay = 500;
                         } finally {
                             if (retryDelay) setTimeout(detectHands, retryDelay);
@@ -1515,7 +1515,10 @@
         function restampAllStrokes() {
             clearDentField();
             const all = strokes.slice();
-            if (currentStroke && currentStroke.points.length) all.push(currentStroke);
+            if (pointerTrack.stroke && pointerTrack.stroke.points.length) all.push(pointerTrack.stroke);
+            for (const track of handTracks) {
+                if (track.stroke) all.push(track.stroke);
+            }
             for (let s = 0; s < all.length; s++) {
                 const stroke = all[s];
                 const pts = stroke.points;
@@ -1542,29 +1545,29 @@
             return { rad, inten, depth, pressure: p };
         }
 
-        function onIndexDraw(x, y, pressure) {
+        function onIndexDraw(x, y, pressure, track = pointerTrack) {
             const sp = strokeParamsFromPressure(pressure);
-            if (!currentStroke) {
-                currentStroke = { points: [{ x, y }], intensity: sp.inten, radius: sp.rad, hardness: edgeHardness };
+            if (!track.stroke) {
+                track.stroke = { points: [{ x, y }], intensity: sp.inten, radius: sp.rad, hardness: edgeHardness };
                 stampSegment(x, y, x, y, sp.depth, sp.rad, edgeHardness);
                 return;
             }
-            const last = currentStroke.points[currentStroke.points.length - 1];
+            const last = track.stroke.points[track.stroke.points.length - 1];
             const dx = x - last.x, dy = y - last.y;
             if (Math.hypot(dx * window.innerWidth, dy * window.innerHeight) < 0.5) return;
-            currentStroke.points.push({ x, y });
+            track.stroke.points.push({ x, y });
             // Update stroke footprint if pressure changes mid-stroke
-            currentStroke.radius = sp.rad;
-            currentStroke.intensity = sp.inten;
-            currentStroke.hardness = edgeHardness;
+            track.stroke.radius = sp.rad;
+            track.stroke.intensity = sp.inten;
+            track.stroke.hardness = edgeHardness;
             stampSegment(last.x, last.y, x, y, sp.depth, sp.rad, edgeHardness);
         }
 
-        function endCurrentStroke() {
-            if (currentStroke && currentStroke.points.length > 0) {
-                strokes.push(currentStroke);
+        function endCurrentStroke(track = pointerTrack) {
+            if (track.stroke && track.stroke.points.length > 0) {
+                strokes.push(track.stroke);
             }
-            currentStroke = null;
+            track.stroke = null;
         }
 
         function tryUndo() {
@@ -1574,6 +1577,7 @@
 
         function performUndo() {
             endCurrentStroke();
+            handTracks.forEach(stopHand);
             if (strokes.length === 0) return;
             strokes.pop();
             restampAllStrokes();
@@ -1581,6 +1585,7 @@
 
         function performClear() {
             endCurrentStroke();
+            handTracks.forEach(stopHand);
             strokes.length = 0;
             clearDentField();
             clearTarget(waveFboA, waveTexA);
@@ -1621,8 +1626,10 @@
             gl.uniform1i(gl.getUniformLocation(programs.physics, 'uDent'), 2);
 
             gl.uniform2f(gl.getUniformLocation(programs.physics, 'uResolution'), simW, simH);
-            gl.uniform3f(gl.getUniformLocation(programs.physics, 'uIndex'), indexTip.x, indexTip.y, indexTip.active);
-            gl.uniform3f(gl.getUniformLocation(programs.physics, 'uPrevIndex'), prevIndexTip.x, prevIndexTip.y, prevIndexTip.active);
+            const tips = [indexTip, ...handTracks.map(track => track.tip)];
+            const previousTips = [prevIndexTip, ...handTracks.map(track => track.prev)];
+            gl.uniform3fv(gl.getUniformLocation(programs.physics, 'uIndex[0]'), tips.flatMap(tip => [tip.x, tip.y, tip.active]));
+            gl.uniform3fv(gl.getUniformLocation(programs.physics, 'uPrevIndex[0]'), previousTips.flatMap(tip => [tip.x, tip.y, tip.active]));
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uTime'), time * 0.001);
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uIntensity'), intensity);
             gl.uniform1f(gl.getUniformLocation(programs.physics, 'uRadius'), waveRadiusMult);
@@ -1634,6 +1641,7 @@
             prevIndexTip.x = indexTip.x;
             prevIndexTip.y = indexTip.y;
             prevIndexTip.active = indexTip.active;
+            for (const track of handTracks) Object.assign(track.prev, track.tip);
 
             swapWave();
 
@@ -1740,6 +1748,7 @@
             if (e.pointerType === 'mouse' && e.button !== 0) return;
             pointerDown = true;
             pointerDrawActive = true;
+            handTracks.forEach(stopHand);
             activePointerId = e.pointerId;
             try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
             const p = pointerPos(e);
@@ -1818,7 +1827,10 @@
             edgeHardness = parseFloat(e.target.value);
             // Live preview: persistent scar edge hardness (凹痕边缘), restamp all dents
             for (let i = 0; i < strokes.length; i++) strokes[i].hardness = edgeHardness;
-            if (currentStroke) currentStroke.hardness = edgeHardness;
+            if (pointerTrack.stroke) pointerTrack.stroke.hardness = edgeHardness;
+            for (const track of handTracks) {
+                if (track.stroke) track.stroke.hardness = edgeHardness;
+            }
             restampAllStrokes();
         });
 
@@ -1953,8 +1965,8 @@
             e.stopPropagation();
             fingerGestureEnabled = !fingerGestureEnabled;
             if (!fingerGestureEnabled) {
-                tipSmooth.init = false;
-                tipLostSince = 0;
+                handTracks.forEach(stopHand);
+
                 if (!pointerDrawActive) {
                     indexTip.active = 0;
                     endCurrentStroke();
