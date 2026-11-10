@@ -1112,8 +1112,6 @@
         // Stroke memory
         const strokes = []; // { points: [{x,y}], intensity, radius }
         let currentStroke = null;
-        let lastUndoTime = 0;
-        const UNDO_DEBOUNCE_MS = 400;
 
         function showError(msg) {
             logEl.style.display = 'block';
@@ -1594,8 +1592,6 @@
 
         function tryUndo() {
             const now = performance.now();
-            if (now - lastUndoTime < UNDO_DEBOUNCE_MS) return;
-            lastUndoTime = now;
             performUndo();
         }
 
@@ -1914,7 +1910,6 @@
 
         document.getElementById('btn-undo').addEventListener('click', (e) => {
             e.stopPropagation();
-            lastUndoTime = performance.now();
             performUndo();
         });
         document.getElementById('btn-clear').addEventListener('click', (e) => {
